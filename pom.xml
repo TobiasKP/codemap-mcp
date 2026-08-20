@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>io.github.tobiaskp</groupId>
+  <artifactId>codemap</artifactId>
+  <version>0.1.0</version>
+  <packaging>jar</packaging>
+
+  <name>codemap</name>
+  <description>Language-agnostic code graph builder: scans a project and renders it as a navigable city map.</description>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <treesitter.version>0.26.6</treesitter.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.xerial</groupId>
+      <artifactId>sqlite-jdbc</artifactId>
+      <version>3.53.2.1</version>
+    </dependency>
+
+    <!-- tree-sitter core (JNI, natives bundled for linux/mac/windows x64+arm64) -->
+    <dependency>
+      <groupId>io.github.bonede</groupId>
+      <artifactId>tree-sitter</artifactId>
+      <version>${treesitter.version}</version>
+    </dependency>
+
+    <!-- grammars: one jar per language, each with bundled natives -->
+    <dependency><groupId>io.github.bonede</groupId><artifactId>tree-sitter-java</artifactId><version>0.23.5</version></dependency>
+    <dependency><groupId>io.github.bonede</groupId><artifactId>tree-sitter-cpp</artifactId><version>0.23.4</version></dependency>
+    <dependency><groupId>io.github.bonede</groupId><artifactId>tree-sitter-c</artifactId><version>0.24.1</version></dependency>
+    <dependency><groupId>io.github.bonede</groupId><artifactId>tree-sitter-c-sharp</artifactId><version>0.23.1</version></dependency>
+    <dependency><groupId>io.github.bonede</groupId><artifactId>tree-sitter-python</artifactId><version>0.25.0</version></dependency>
+    <dependency><groupId>io.github.bonede</groupId><artifactId>tree-sitter-javascript</artifactId><version>0.25.0</version></dependency>
+    <dependency><groupId>io.github.bonede</groupId><artifactId>tree-sitter-typescript</artifactId><version>0.23.2</version></dependency>
+    <dependency><groupId>io.github.bonede</groupId><artifactId>tree-sitter-go</artifactId><version>0.25.0</version></dependency>
+    <dependency><groupId>io.github.bonede</groupId><artifactId>tree-sitter-rust</artifactId><version>0.24.0</version></dependency>
+    <dependency><groupId>io.github.bonede</groupId><artifactId>tree-sitter-kotlin</artifactId><version>0.3.8.1</version></dependency>
+    <dependency><groupId>io.github.bonede</groupId><artifactId>tree-sitter-php</artifactId><version>0.24.2</version></dependency>
+    <dependency><groupId>io.github.bonede</groupId><artifactId>tree-sitter-ruby</artifactId><version>0.23.1</version></dependency>
+    <dependency><groupId>io.github.bonede</groupId><artifactId>tree-sitter-scala</artifactId><version>0.24.0</version></dependency>
+    <dependency><groupId>io.github.bonede</groupId><artifactId>tree-sitter-swift</artifactId><version>0.5.0</version></dependency>
+  </dependencies>
+
+  <build>
+    <finalName>codemap</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.2</version>
+        <configuration>
+          <archive>
+            <manifest>
+              <mainClass>io.github.tobiaskp.codemap.Main</mainClass>
+              <addClasspath>true</addClasspath>
+              <classpathPrefix>lib/</classpathPrefix>
+            </manifest>
+          </archive>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.7.0</version>
+        <executions>
+          <execution>
+            <id>copy-deps</id>
+            <phase>package</phase>
+            <goals><goal>copy-dependencies</goal></goals>
+            <configuration>
+              <outputDirectory>${project.build.directory}/lib</outputDirectory>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

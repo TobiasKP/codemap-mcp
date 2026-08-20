@@ -1,0 +1,23 @@
+# build output
+out/
+target/
+dist/
+
+# third-party jars: 27 MB of binaries whose terms are the upstream projects' to state.
+# `mvn package`, or tools/fetch-deps.sh, puts them here. See THIRD-PARTY.md.
+lib/
+
+# scanned graphs — these contain the structure of whatever you pointed it at, which for a
+# private codebase is not yours to publish
+graphs/
+*.db
+*.db-wal
+*.db-shm
+
+# local scratch
+*.log
+.gs-tmp/
+
+# local MCP client config, not part of the project
+managed-mcp.json
+.mcp.json
