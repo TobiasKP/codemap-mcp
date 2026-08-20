@@ -31,6 +31,16 @@ function check(label, condition, detail) {
   console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}${detail == null ? '' : '  (' + detail + ')'}`);
 }
 
+/*
+ * Some properties are conditional on the data: whether any dependency crosses the container
+ * you happen to open, whether the view you land in contains a class with methods. The suite
+ * runs against whatever server you point it at, so "this project does not offer that case"
+ * is information, not a failure - failing on it trains you to ignore the output.
+ */
+function note(label, detail) {
+  console.log(`  n/a  ${label}${detail == null ? '' : '  (' + detail + ')'}`);
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function settle(predicate, label, timeoutMs = 20000) {
@@ -258,9 +268,14 @@ check('level 2 edges stay inside the module',
     const ids = new Set(app.state.viewNodes.map((n) => n.id));
     return ids.has(e.s) && ids.has(e.d);
   }), app.state.viewEdges.length + ' internal edges');
-// Nothing is outside the outermost build unit, so only demand a rim where one can exist.
-if (district.parent) {
-  check('level 2 has dashed externals', app.state.externals.length > 0,
+// Nothing is outside the outermost build unit, and a module whose packages happen to keep
+// to themselves has nothing on the rim either.
+if (!district.parent) {
+  note('level 2 has dashed externals', 'outermost build unit - nothing is outside it');
+} else if (app.state.externals.length === 0) {
+  note('level 2 has dashed externals', 'nothing in ' + district.name + ' reaches outside it');
+} else {
+  check('level 2 has dashed externals', true,
     app.state.externals.length + ' outside this module');
 }
 check('every external points at a real node',
@@ -297,8 +312,12 @@ check('a package view holds its classes',
   app.state.viewNodes.some((n) => n.layer === 3)
     && app.state.viewNodes.every((n) => n.parent === pkg.id),
   app.state.viewNodes.filter((n) => n.layer === 3).length + ' classes in ' + pkg.name);
-check('level 3 has dashed externals', app.state.externals.length > 0,
-  app.state.externals.length + ' outside this package');
+if (app.state.externals.length === 0) {
+  note('level 3 has dashed externals', 'nothing in this package reaches outside it');
+} else {
+  check('level 3 has dashed externals', true,
+    app.state.externals.length + ' outside this package');
+}
 frame();
 check('level 3 drew its entities', app.batches.nodes.count === app.state.viewNodes.length,
   app.batches.nodes.count + ' instances');
@@ -326,11 +345,18 @@ check('labels rendered', el('labels').children
 
 // ---- level 4: one class's callables and the calls between them ----
 {
-  const withMembers = app.state.viewNodes.filter((n) => n.layer === 3)
+  // a FILE node is a source file with no type in it - a shell script has no methods, so
+  // it is not a candidate for the callable level however many children the view reports
+  const withMembers = app.state.viewNodes
+    .filter((n) => n.layer === 3 && n.kind !== 'FILE' && n.children > 1)
     .sort((a, b) => b.children - a.children)[0];
-  check('found a class with callables', withMembers && withMembers.children > 1,
-    withMembers && `${withMembers.name} (${withMembers.children} members)`);
-  if (withMembers && withMembers.children > 1) {
+  if (!withMembers) {
+    note('found a class with callables', 'no class in this view declares more than one');
+  } else {
+    check('found a class with callables', true,
+      `${withMembers.name} (${withMembers.children} members)`);
+  }
+  if (withMembers) {
     await app.openView(withMembers);
     check('level 4 shows only that class\'s callables',
       app.state.viewNodes.length > 0

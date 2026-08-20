@@ -21,7 +21,7 @@ export const PALETTE = {
   '--block': '#dedbd0', '--block-line': '#aeab9b', '--edge': 'rgba(11, 11, 11, 0.07)',
   '--kind-class': '#2a78d6', '--kind-interface': '#eb6834', '--kind-value': '#1baf7a',
   '--kind-file': '#898781', '--dir-out': '#2a78d6', '--dir-in': '#eb6834', '--ink': '#0b0b0b',
-  '--ink-muted': '#898781',
+  '--ink-2': '#52514e', '--ink-muted': '#898781', '--panel': '#fcfcfb',
   '--prop-add': '#0e7546', '--prop-change': '#dfa300', '--prop-del': '#c4291c',
 };
 
@@ -30,7 +30,7 @@ export const DARK_PALETTE = {
   '--block': '#2b2b28', '--block-line': '#52524a', '--edge': 'rgba(255, 255, 255, 0.09)',
   '--kind-class': '#3987e5', '--kind-interface': '#d95926', '--kind-value': '#199e70',
   '--kind-file': '#898781', '--dir-out': '#3987e5', '--dir-in': '#d95926', '--ink': '#ffffff',
-  '--ink-muted': '#898781',
+  '--ink-2': '#c3c2b7', '--ink-muted': '#898781', '--panel': '#1a1a19',
   '--prop-add': '#33aa74', '--prop-change': '#b8860b', '--prop-del': '#c73b2e',
 };
 

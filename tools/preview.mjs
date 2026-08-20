@@ -9,6 +9,7 @@
  *   node tools/preview.mjs --url http://localhost:7777 --zoom module   # into the biggest module
  *   node tools/preview.mjs --url http://localhost:7777 --zoom class    # a class's functions
  *   node tools/preview.mjs --url http://localhost:7777 --zoom package --dark
+ *   node tools/preview.mjs --url http://localhost:7777 --chrome --out shot.png   # + panels
  *
  * One blind spot worth knowing: it rasterises through worldToScreen(), so it cannot see a
  * vertex shader that disagrees with worldToScreen() about the screen transform. The smoke
@@ -16,6 +17,7 @@
  */
 import { createEnvironment, PALETTE, DARK_PALETTE } from './stub-dom.mjs';
 import { createRasteriser } from './raster.mjs';
+import { decorate } from './chrome.mjs';
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => {
@@ -30,6 +32,9 @@ const ZOOM = opt('zoom', 'world');      // world | module | package | class
 const WIDTH = +opt('width', 1440);
 const HEIGHT = +opt('height', 900);
 const DARK = flag('dark');
+// off by default: a bare canvas is what you want when checking layout, and the panels
+// cover part of it. On for anything a human is meant to read.
+const CHROME = flag('chrome');
 
 const env = createEnvironment({
   viewport: { w: WIDTH, h: HEIGHT },
@@ -37,7 +42,7 @@ const env = createEnvironment({
   theme: DARK ? 'dark' : 'light',
   base: BASE,
 });
-const { app, frame } = env;
+const { app, el, frame } = env;
 // the app's own parsed palette, so the preview cannot drift from what it draws
 const raster = createRasteriser({ app, width: WIDTH, height: HEIGHT, palette: app.palette() });
 
@@ -84,6 +89,10 @@ frame();
 
 raster.renderScene();
 raster.writePng(OUT);
+if (CHROME) {
+  app.updateLabels();
+  decorate(OUT, { app, el, width: WIDTH, height: HEIGHT });
+}
 
 console.log(`${app.state.meta.project_name}  ${ZOOM}${DARK ? ' dark' : ''}`
   + `  level=${app.state.level}`

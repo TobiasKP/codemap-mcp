@@ -338,7 +338,9 @@ const batches = {
  * black, every pass paints black on black, and the map looks like it never drew at all.
  * The CSS custom properties in index.html still style the chrome (panels, text, legend);
  * these values are the canvas half and must be kept in step with them - the smoke test
- * asserts that they agree.
+ * asserts that they agree. A few chrome colours (--panel, --ink-2) live here too, not
+ * because the renderer needs them but because tools/chrome.mjs draws the panels offline for
+ * the README stills, and having them here puts them under that same agreement check.
  */
 const THEMES = {
   light: {
@@ -346,7 +348,8 @@ const THEMES = {
     '--block': '#dedbd0', '--block-line': '#aeab9b', '--edge': 'rgba(11,11,11,0.07)',
     '--kind-class': '#2a78d6', '--kind-interface': '#eb6834', '--kind-value': '#1baf7a',
     '--kind-file': '#898781', '--dir-out': '#2a78d6', '--dir-in': '#eb6834',
-    '--ink': '#0b0b0b', '--ink-muted': '#898781',
+    '--ink': '#0b0b0b', '--ink-2': '#52514e', '--ink-muted': '#898781',
+    '--panel': '#fcfcfb',
     '--prop-add': '#0e7546', '--prop-change': '#dfa300', '--prop-del': '#c4291c',
   },
   dark: {
@@ -354,7 +357,8 @@ const THEMES = {
     '--block': '#2b2b28', '--block-line': '#52524a', '--edge': 'rgba(255,255,255,0.09)',
     '--kind-class': '#3987e5', '--kind-interface': '#d95926', '--kind-value': '#199e70',
     '--kind-file': '#898781', '--dir-out': '#3987e5', '--dir-in': '#d95926',
-    '--ink': '#ffffff', '--ink-muted': '#898781',
+    '--ink': '#ffffff', '--ink-2': '#c3c2b7', '--ink-muted': '#898781',
+    '--panel': '#1a1a19',
     '--prop-add': '#33aa74', '--prop-change': '#b8860b', '--prop-del': '#c73b2e',
   },
 };

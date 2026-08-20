@@ -15,6 +15,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createEnvironment, PALETTE, DARK_PALETTE } from './stub-dom.mjs';
 import { createRasteriser, smoothstep } from './raster.mjs';
+import { decorate, FONT } from './chrome.mjs';
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => {
@@ -57,72 +58,22 @@ let shot = 0;
 fs.rmSync(FRAMES, { recursive: true, force: true });
 fs.mkdirSync(FRAMES, { recursive: true });
 
-/*
- * Labels live in the DOM, not in the GL buffers, so the rasteriser cannot draw them and a
- * nameless map badly undersells the tool - half of what a code map is for is reading the
- * names. So each frame records where the app placed its labels and ImageMagick draws the
- * real text on top afterwards. The positions are the app's own, not re-derived here.
+/**
+ * One frame: rasterise the GL buffers, then draw the labels and the UI chrome over them.
+ *
+ * The chrome is not decoration. The canvas shows *where* a change lands; the proposal panel
+ * on the left is where it says what the change is and why, and the legend is where a ring
+ * texture stops being a mystery. A recording of the canvas alone was the first version of
+ * this, and it showed coloured circles nobody could interpret.
  */
-const FONT = ['/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf',
-  '/usr/share/fonts/noto/NotoSans-Regular.ttf',
-  '/usr/share/fonts/gsfonts/NimbusSans-Regular.otf']
-  .find((f) => fs.existsSync(f));
-const labelFrames = [];
-
-const LABEL_STYLE = {
-  district: { size: 13, role: '--ink-2', upper: true },
-  block: { size: 12, role: '--ink-2', upper: false },
-  type: { size: 12, role: '--ink', upper: false },
-  port: { size: 12, role: '--ink', upper: false },
-  prop: { size: 13, role: '--prop-add', upper: false },
-};
-
-/** One rasterised frame, plus the label placement the app decided on for it. */
 function capture() {
   frame();
   app.updateLabels();
   raster.renderScene();
-  raster.writePng(path.join(FRAMES, String(shot).padStart(4, '0') + '.png'));
-
-  const labels = [];
-  for (const node of el('labels').children) {
-    if (node.style.display === 'none') continue;
-    const m = /translate\((-?[\d.]+)px, (-?[\d.]+)px\)$/.exec(node.style.transform || '');
-    if (!m) continue;
-    const cls = ['prop', 'port', 'district', 'block', 'type']
-      .find((c) => (node.className || '').includes(c)) || 'type';
-    const style = LABEL_STYLE[cls];
-    // the font has no U+21E2, and a tofu box in the middle of the map looks like a bug
-    let text = (node.textContent || '').replace(/⇢/g, '->');
-    if (style.upper) text = text.toUpperCase();
-    labels.push({ x: +m[1], y: +m[2], text, ...style });
-  }
-  labelFrames.push(labels);
+  const file = path.join(FRAMES, String(shot).padStart(4, '0') + '.png');
+  raster.writePng(file);
+  decorate(file, { app, el, width: WIDTH, height: HEIGHT });
   shot++;
-}
-
-/** Draws each frame's labels with ImageMagick, centred where the app put them. */
-function annotate() {
-  if (!FONT) {
-    console.log('  no usable font found; leaving frames unlabelled');
-    return;
-  }
-  const palette = app.palette();
-  const hex = (rgb) => '#' + rgb.slice(0, 3)
-    .map((c) => Math.round(c * 255).toString(16).padStart(2, '0')).join('');
-  for (let i = 0; i < shot; i++) {
-    const file = path.join(FRAMES, String(i).padStart(4, '0') + '.png');
-    const args = [file, '-font', FONT, '-gravity', 'center'];
-    for (const label of labelFrames[i]) {
-      if (!label.text) continue;
-      args.push('-pointsize', String(label.size),
-        '-fill', hex(palette[label.role] || palette['--ink']),
-        '-annotate', `+${Math.round(label.x - WIDTH / 2)}+${Math.round(label.y - HEIGHT / 2)}`,
-        label.text);
-    }
-    args.push(file);
-    execFileSync('magick', args);
-  }
 }
 
 /** Holds the current state for a beat, so a viewer can read it. */
@@ -166,41 +117,70 @@ frame();
 const outermost = app.state.container;
 hold(1.4);
 
-// 2. an agent draws a change on it. Pick real targets from the graph: the package with the
-//    most traffic, a class inside it, and one of that class's neighbours.
-const busiest = app.state.viewNodes.slice()
-  .sort((a, b) => (b.out + b.in) - (a.out + a.in) || b.children - a.children)[0];
-await app.openView(busiest);
-let host = app.state.container;
-for (let step = 0; step < 6 && !app.state.viewNodes.some((n) => n.layer === 3); step++) {
-  const next = app.state.viewNodes.slice()
-    .sort((a, b) => (b.out + b.in) - (a.out + a.in) || b.children - a.children)[0];
-  if (!next || next.layer > 2) break;
-  await app.openView(next);
-  host = app.state.container;
-}
-// Skip test scaffolding when picking what the plan touches: "delete mockQuerier" is a
-// nonsense plan, and a demo that shows a nonsense plan argues against the tool.
-const classes = app.state.viewNodes.filter((n) => n.layer === 3
-    && !/test|mock|fake|stub|_test/i.test(n.name))
+/*
+ * 2. An agent draws a change on it. The targets are real nodes from the graph, and the
+ *    package is chosen to be *legible* rather than important: the busiest package in a
+ *    large project holds a hundred classes and several hundred edges, which is a hairball,
+ *    and the whole argument of this animation is that the lowest level tells you something.
+ *    A dozen classes with a dozen edges between them is a view you can actually read.
+ */
+const LEGIBLE = { min: 6, max: 16 };
+const DECLARED = ['CLASS', 'STRUCT', 'INTERFACE', 'TRAIT', 'RECORD', 'ENUM'];
+// Benchmarks, samples and generated code are real code but make a poor illustration: a
+// plan that reorganises a JMH harness says nothing about what the tool is for.
+const skip = /test|bench|jmh|example|sample|demo|vendor|fixture|third_party|node_modules|generated/i;
+
+/*
+ * A child count in the legible range is necessary but not sufficient: those children may be
+ * sub-packages rather than types, which lands the animation on another package view instead
+ * of the class level it is supposed to reach. So open each candidate and check what is
+ * actually in it. Only real declared types count - a FILE node is a source file with no type
+ * in it, and "delete kuma.go" reads as a tool that does not know what it is looking at.
+ */
+const candidates = app.state.byLayer[2]
+  .filter((n) => n.children >= LEGIBLE.min && n.children <= LEGIBLE.max && !skip.test(n.qname))
   .sort((a, b) => (b.in + b.out) - (a.in + a.out));
+
+let host = null;
+let classes = [];
+for (const candidate of candidates.slice(0, 15)) {
+  await app.openView(candidate);
+  const found = app.state.viewNodes
+    .filter((n) => n.layer === 3 && DECLARED.includes(n.kind)
+      // a readable panel row is part of the point being made, and
+      // AbstractSharedExecutorMicrobenchmark.DelegateHarnessExecutor is not one
+      && n.name.length <= 28
+      && !/test|mock|fake|stub/i.test(n.name))
+    .sort((a, b) => (b.in + b.out) - (a.in + a.out));
+  if (found.length >= 4) {
+    host = candidate;
+    classes = found;
+    break;
+  }
+}
+if (!host) {
+  console.error('no package in this project reaches a legible class-level view');
+  process.exit(1);
+}
+await app.openView(host);
+
 const target = classes[0];
 const partner = classes[1] || classes[0];
 
-await post('/api/proposal/start', { title: 'Extract the retention policy' });
+await post('/api/proposal/start', { title: 'Extract a shared policy object' });
 await post('/api/proposal/change', {
-  op: 'add', parent: String(host.id), name: 'RetentionPolicy', kind: 'CLASS',
-  note: 'one place to decide what gets kept',
+  op: 'add', parent: String(host.id), name: 'Policy', kind: 'CLASS',
+  note: 'one place for rules these types each re-implement',
 });
 await post('/api/proposal/change', {
-  op: 'modify', target: String(target.id), note: 'ask the policy instead of deciding inline',
+  op: 'modify', target: String(target.id), note: 'delegate the decision to the policy',
 });
 await post('/api/proposal/change', {
   op: 'connect', from: String(target.id), to: 'n1', edge_kind: 'CALL',
 });
 if (partner !== target) {
   await post('/api/proposal/change', {
-    op: 'delete', target: String(partner.id), note: 'folded into the new policy',
+    op: 'delete', target: String(partner.id), note: 'redundant once the policy exists',
   });
 }
 
@@ -226,8 +206,8 @@ for (const node of chain) {
 //    would drown out the one green diamond this whole animation exists to show.
 hold(3.2);
 
-console.log(`${shot} frames at ${WIDTH}x${HEIGHT}`);
-annotate();
+console.log(`${shot} frames at ${WIDTH}x${HEIGHT}`
+  + (FONT ? '' : '  (no font found - frames are unlabelled)'));
 
 // ------------------------------------------------------------------- encode
 

@@ -3,14 +3,15 @@
 **A live map of any codebase — and an MCP server that lets your coding agent draw its plan
 on it before writing a line of code.**
 
-![codemap drawing an agent's proposed change onto a map of prometheus](docs/demo.gif)
+![codemap drawing an agent's proposed change onto a map of netty](docs/demo.gif)
 
-Ask an agent to plan work and you get prose: *"add a retention policy, have the series
-store call it, drop the old appender"*. You approve it, and then find out it touched three
-packages you weren't expecting. codemap gives the agent the map instead. Additions turn
-**green**, changes **yellow**, deletions **red**, arrows show connections it wants to
-create, and everything untouched fades into the background — so the blast radius is visible
-from the project view before any code is written.
+Ask an agent to plan work and you get prose: *"add a shared policy object, have the channel
+interface delegate to it, drop the default implementation"*. You approve it, and then find
+out it touched three packages you weren't expecting. codemap gives the agent the map
+instead. Additions turn **green**, changes **yellow**, deletions **red**, arrows show
+connections it wants to create, and everything untouched fades into the background — so the
+blast radius is visible from the project view before any code is written, and the panel on
+the left says which change is which and why.
 
 Nothing is persisted. A proposal is an overlay in memory; the graph stays a record of what
 the code *is*.
@@ -50,8 +51,9 @@ is reviewable in seconds.
 
 |  |  |
 |---|---|
-| A change buried in one method, seen from the project view | ![one module lit amber, the rest faded](docs/proposal-top.png) |
-| The same change, four levels down | ![a green diamond, an amber ring and a dashed red ring](docs/proposal-detail.png) |
+| A change buried in one package, seen from the project view — one of netty's 59 modules ringed, the rest faded, and the panel on the left saying what the change is | ![one module lit amber, the rest faded, with the change listed in the panel](docs/proposal-top.png) |
+| The same change three levels down: a new class as a green diamond, the interface it would be called from ringed amber, the class it replaces ringed dashed red | ![a green diamond, an amber ring and a dashed red ring](docs/proposal-detail.png) |
+| And the map on its own, with no proposal on it | ![netty's modules and the dependencies between them](docs/map.png) |
 
 Every status is carried by **colour, ring texture and a word** — doubled ring for an
 addition, solid for a change, dashed for a deletion, each spelled out in the panel. Green
@@ -144,9 +146,9 @@ both sub-packages and its own classes shows both, as a folder shows folders and 
   packages are not really flat — `…reporting.editor` sits under `…reporting`. Grouping on
   the path turns a flat list into a handful of siblings, and again at each step down. Levels
   that neither hold code nor branch are collapsed, so you never click through `com` →
-  `com.example` → `com.example.app`. On the prometheus scan above that leaves **810 of 913
-  views with 25 or fewer children**; on junit5, 3,342 of 3,432. What is left over is real
-  breadth — one junit5 package genuinely holds 585 types — not an artifact of the layout.
+  `com.example` → `com.example.app`. On the netty scan above that leaves **4,478 of 4,790
+  views with 25 or fewer children**, and only 10 above 150. What is left over is real
+  breadth, not an artifact of the layout.
 - Anything a view depends on that lives **outside** it appears as a **dashed entity on the
   rim**, placed in the direction that thing actually lies — double-click it and you are
   there.
@@ -279,5 +281,6 @@ src/main/resources/web/  index.html + app.js (the WebGL viewer)
 MIT — see [LICENSE](LICENSE). Runtime dependencies and their terms are listed in
 [THIRD-PARTY.md](THIRD-PARTY.md).
 
-The demo above maps [prometheus](https://github.com/prometheus/prometheus); the proposal in
-it is invented for the animation, not a real suggestion about that project.
+The demo above maps [netty](https://github.com/netty/netty) — 57 modules, 5,253 types. The
+proposal drawn on it is invented for the animation, not a real suggestion about that
+project.
