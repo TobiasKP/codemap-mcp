@@ -1,0 +1,64 @@
+# Builds the self-contained jar and publishes it as a release asset.
+#
+# Pushing a tag is the whole trigger, because the alternative - uploading a jar built on
+# somebody's laptop - means the artifact people download is not the one the repository
+# describes. Here it is built from the tagged commit, by the documented commands, and
+# smoke-tested before it is published.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write        # needed to create the release and attach the jar
+
+jobs:
+  jar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # the jars are not vendored in the repository; fetch them, then merge everything
+      # into one file (see THIRD-PARTY.md for what ends up inside it)
+      - name: Fetch dependencies
+        run: tools/fetch-deps.sh
+
+      - name: Build codemap.jar
+        run: tools/package.sh
+
+      # A release asset that does not run is worse than no release asset, and the failure
+      # would only surface for whoever downloaded it first. Scan the repo's own fixture and
+      # confirm the jar produced a graph.
+      - name: Smoke test the artifact
+        run: |
+          java -jar dist/codemap.jar tools/fixtures/split --name smoke --db /tmp/smoke.db
+          test -s /tmp/smoke.db
+          java -jar dist/codemap.jar --help | grep -q 'codemap <project-path>'
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/codemap.jar \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file - <<'NOTES'
+          One jar, no build. Needs a JVM 21+ and nothing else — tree-sitter and all 14
+          grammars are bundled with their native libraries for linux, macOS and Windows on
+          x86-64 and arm64.
+
+              curl -LO https://github.com/TobiasKP/codemap-mcp/releases/latest/download/codemap.jar
+              java -jar codemap.jar /path/to/project --serve    # → http://localhost:7777
+              java -jar codemap.jar mcp --port 7777             # stdio MCP for your agent
+
+          The MCP server lets a coding agent draw a planned change onto the map — green
+          added, yellow changed, red deleted — as an in-memory overlay that is never
+          written to the database.
+          NOTES

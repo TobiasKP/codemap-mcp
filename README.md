@@ -17,6 +17,8 @@ Nothing is persisted. A proposal is an overlay in memory; the graph stays a reco
 the code *is*.
 
 ```bash
+curl -LO https://github.com/TobiasKP/codemap-mcp/releases/latest/download/codemap.jar
+
 # 1. scan a project (any language) and open the map
 java -jar codemap.jar /path/to/project --serve      # → http://localhost:7777
 
@@ -24,9 +26,11 @@ java -jar codemap.jar /path/to/project --serve      # → http://localhost:7777
 java -jar codemap.jar mcp --port 7777               # stdio MCP, spawned by the client
 ```
 
-One jar, no build, no runtime but a JVM 21+.
-[Download the latest release](../../releases/latest) — it bundles tree-sitter and all 14
-grammars with their native libraries.
+One jar, no build, no runtime but a JVM 21+ — it bundles tree-sitter and all 14 grammars
+with their native libraries for linux, macOS and Windows on x86-64 and arm64. Built from the
+tagged commit by [CI](.github/workflows/release.yml), not uploaded from a laptop.
+[All releases](../../releases). Or [build it yourself](#building-from-source) — it is three
+commands.
 
 MCP client config (`.mcp.json`, or your editor's equivalent):
 
