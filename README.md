@@ -187,7 +187,9 @@ folders and files.
   keeps its single heaviest link whatever the threshold says, so nothing is ever drawn as
   isolated when it is not.
   Both truncations are stated in the status line — `40 of 338 types · 55 of 180 edges` —
-  because a silent cap reads as "this is everything".
+  because a silent cap reads as "this is everything". Neither ever hides something a
+  proposal touches: importance measures how much of the codebase an entity carries, which
+  has nothing to do with whether someone is about to change it.
 
   ![a package of 338 types, folded to the 40 that carry it](docs/wide-view.png)
 - Anything a view depends on that lives **outside** it appears as a **dashed entity on the

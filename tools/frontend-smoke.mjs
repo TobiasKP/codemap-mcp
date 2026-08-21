@@ -697,6 +697,20 @@ check('going up repeatedly reaches the root',
       app.state.focusedOut === before - app.state.viewNodes.length
         && app.state.viewNodes.every((n) => app.proposalAlpha(n) === 1),
       app.state.focusedOut + ' removed, nothing drawn at reduced alpha');
+    /*
+     * The two planning views must agree about what exists. Focus filters to the touched set
+     * before folding, so anything touched but low-ranked showed up focused and was missing
+     * from the same view unfocused - a class present in one and absent in the other, which
+     * reads as a bug in the graph rather than a display choice.
+     */
+    const focusedNames = new Set(app.state.viewNodes.map((n) => n.name));
+    const unfocusedNames = new Set(geoOff.nodes.keys());
+    const onlyFocused = [...focusedNames].filter((n) => !unfocusedNames.has(n));
+    check('nothing the proposal touches is folded away when unfocused',
+      onlyFocused.length === 0,
+      onlyFocused.length ? 'missing unfocused: ' + onlyFocused.join(', ')
+        : `all ${focusedNames.size} touched entities appear in both views`);
+
     // the whole point of a focused view is that it is the same view with less in it
     const geoOn = geometry(app);
     check('focusing leaves the frame alone', geoOff.extent === geoOn.extent, geoOn.extent);

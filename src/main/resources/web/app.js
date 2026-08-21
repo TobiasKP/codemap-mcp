@@ -738,15 +738,31 @@ function importanceOf(node) {
   return (node.r || 0) * 2 + (node.in || 0) * 0.6 + (node.out || 0) * 0.2;
 }
 
-/** The entities worth drawing, plus how many were folded away behind the marker. */
+/**
+ * The entities worth drawing, plus how many were folded away behind the marker.
+ *
+ * Anything the proposal touches is kept whatever it ranks. Importance is about how much of
+ * the codebase an entity carries, which has nothing to do with whether someone is about to
+ * change it - a small helper class nobody calls can be the whole point of a plan. Folding it
+ * away also made the two planning views disagree about what exists: focus filters to the
+ * touched set before folding, so a low-ranked touched entity appeared there and was missing
+ * from the same view with focus off.
+ *
+ * If the proposal touches more than the budget allows, the budget loses. Drawing 45 entities
+ * is a worse view than drawing 40; hiding part of the change is a wrong one.
+ */
 function foldTail(children, container) {
   if (!container || children.length <= FOLD_LIMIT
       || state.expandedFolds.has(container.id)) {
     return { shown: children, folded: 0 };
   }
+  const touched = [];
+  const rest = [];
+  for (const child of children) (statusOf(child) ? touched : rest).push(child);
   // ranked the same way labels are, so the things drawn are the things named
-  const ranked = children.slice().sort((a, b) => importanceOf(b) - importanceOf(a));
-  return { shown: ranked.slice(0, FOLD_LIMIT), folded: children.length - FOLD_LIMIT };
+  rest.sort((a, b) => importanceOf(b) - importanceOf(a));
+  const shown = touched.concat(rest.slice(0, Math.max(0, FOLD_LIMIT - touched.length)));
+  return { shown, folded: children.length - shown.length };
 }
 
 /**
@@ -756,6 +772,10 @@ function foldTail(children, container) {
  * guarantee thinning can leave a node looking unconnected when it is not, which is a lie
  * rather than a simplification - and the whole point of dropping guessed edges elsewhere in
  * this project is that the map does not lie about connections.
+ *
+ * A link between two entities the proposal touches is kept too, for the same reason folding
+ * keeps them: the plan is the thing being read, and thinning it away would make this view
+ * disagree with the focused one about what connects to what.
  */
 function thinEdges(edges) {
   if (edges.length <= EDGE_FLOOR) return { drawn: edges, hidden: [] };
@@ -767,6 +787,7 @@ function thinEdges(edges) {
   for (const e of sorted) {                    // sorted desc, so first seen is heaviest
     if (!heaviest.has(e.s)) heaviest.set(e.s, e);
     if (!heaviest.has(e.d)) heaviest.set(e.d, e);
+    if (statusOf(state.nodes.get(e.s)) && statusOf(state.nodes.get(e.d))) keep.add(e);
   }
   for (const e of heaviest.values()) keep.add(e);
 
