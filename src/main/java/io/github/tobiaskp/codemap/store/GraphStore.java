@@ -10,10 +10,12 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -22,6 +24,15 @@ import java.util.Map;
  * frontend draws is a row in one of these two tables.
  */
 public final class GraphStore implements AutoCloseable {
+
+    /**
+     * User settings. Separate from {@code meta} on purpose: meta is what the scan found,
+     * settings are what a person chose, and only the second survives a rescan. Also created
+     * on demand by the server, so a database written before this table existed still works.
+     */
+    public static final String SETTINGS_SCHEMA =
+            "CREATE TABLE IF NOT EXISTS settings ("
+                    + "key TEXT PRIMARY KEY, value TEXT NOT NULL)";
 
     private final Connection conn;
 
@@ -33,14 +44,52 @@ public final class GraphStore implements AutoCloseable {
         }
     }
 
+    /**
+     * A rescan replaces the graph wholesale - but not the settings.
+     *
+     * Everything else in this file is derived from the source and can be thrown away, so the
+     * simplest correct thing is to delete the database and write it again. User settings are
+     * the exception: they are the one thing in here a person typed, and silently losing them
+     * on every rescan would make the settings table useless. So they are read out first and
+     * put back afterwards.
+     */
     public static GraphStore createFresh(Path dbFile) throws Exception {
         Files.createDirectories(dbFile.toAbsolutePath().getParent());
+        Map<String, String> settings = readSettings(dbFile);
         Files.deleteIfExists(dbFile);
         Files.deleteIfExists(dbFile.resolveSibling(dbFile.getFileName() + "-wal"));
         Files.deleteIfExists(dbFile.resolveSibling(dbFile.getFileName() + "-shm"));
         GraphStore store = new GraphStore(dbFile);
         store.createSchema();
+        store.writeSettings(settings);
         return store;
+    }
+
+    /** Settings from an existing database, or none if there is no database or no table. */
+    private static Map<String, String> readSettings(Path dbFile) {
+        Map<String, String> out = new LinkedHashMap<>();
+        if (!Files.exists(dbFile)) return out;
+        try (Connection old = DriverManager.getConnection("jdbc:sqlite:" + dbFile.toAbsolutePath());
+             Statement st = old.createStatement();
+             ResultSet rs = st.executeQuery("SELECT key, value FROM settings")) {
+            while (rs.next()) out.put(rs.getString(1), rs.getString(2));
+        } catch (SQLException e) {
+            // no settings table, or a database from before there was one: nothing to carry
+        }
+        return out;
+    }
+
+    private void writeSettings(Map<String, String> settings) throws SQLException {
+        if (settings.isEmpty()) return;
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES(?,?)")) {
+            for (Map.Entry<String, String> e : settings.entrySet()) {
+                ps.setString(1, e.getKey());
+                ps.setString(2, e.getValue());
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
     }
 
     public Connection connection() {
@@ -82,6 +131,7 @@ public final class GraphStore implements AutoCloseable {
                   parent_id INTEGER NOT NULL DEFAULT 0
                 )""");
             st.executeUpdate("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+            st.executeUpdate(SETTINGS_SCHEMA);
         }
     }
 

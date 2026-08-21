@@ -55,6 +55,11 @@ public final class MapServer {
         this.port = port;
         this.conn = DriverManager.getConnection("jdbc:sqlite:" + dbFile.toAbsolutePath());
         this.proposals = new ProposalApi(conn);
+        // a graph written before the settings table existed is still perfectly good, so
+        // create it on demand rather than making the user rescan
+        try (java.sql.Statement st = conn.createStatement()) {
+            st.executeUpdate(io.github.tobiaskp.codemap.store.GraphStore.SETTINGS_SCHEMA);
+        }
     }
 
     public String url() {
@@ -90,6 +95,9 @@ public final class MapServer {
                 case "/api/tree" -> tree(q);
                 case "/api/resolve" -> resolve(q);
                 case "/api/search" -> search(q);
+                case "/api/settings" -> method.equals("POST")
+                        ? writeSettings(body(exchange))
+                        : readSettings();
                 case "/api/proposal" -> method.equals("DELETE")
                         ? proposals.clear()
                         : proposals.read(longOr(q.get("since"), -1));
@@ -520,6 +528,49 @@ public final class MapServer {
             return sb.toString();
         }
         return "{\"error\":\"unusable reference\"}";
+    }
+
+    // --------------------------------------------------------- api: settings
+
+    /**
+     * What the user has chosen. Kept apart from {@code /api/meta} deliberately: meta is what
+     * the scan found and is replaced by the next one, settings are what a person set and
+     * outlive it.
+     */
+    private String readSettings() throws SQLException {
+        StringBuilder sb = new StringBuilder("{\"settings\":{");
+        synchronized (conn) {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT key, value FROM settings ORDER BY key");
+                 ResultSet rs = ps.executeQuery()) {
+                boolean first = true;
+                while (rs.next()) {
+                    if (!first) sb.append(',');
+                    first = false;
+                    Json.field(sb, rs.getString(1), rs.getString(2));
+                }
+            }
+        }
+        sb.append("}}");
+        return sb.toString();
+    }
+
+    /** {@code POST /api/settings} with {@code {"key":..., "value":...}}. */
+    private String writeSettings(Map<String, Object> body) throws SQLException {
+        Object key = body.get("key");
+        Object value = body.get("value");
+        if (key == null || String.valueOf(key).isBlank()) {
+            return "{\"error\":\"a setting needs a key\"}";
+        }
+        synchronized (conn) {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "INSERT OR REPLACE INTO settings(key, value) VALUES(?,?)")) {
+                ps.setString(1, String.valueOf(key));
+                ps.setString(2, value == null ? "" : String.valueOf(value));
+                ps.executeUpdate();
+            }
+        }
+        return readSettings();
     }
 
     // ----------------------------------------------------------- api: search

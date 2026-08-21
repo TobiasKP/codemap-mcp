@@ -59,6 +59,31 @@ is reviewable in seconds.
 | The same change three levels down: a new class as a green diamond, the interface it would be called from ringed amber, the class it replaces ringed dashed red | ![a green diamond, an amber ring and a dashed red ring](docs/proposal-detail.png) |
 | And the map on its own, with no proposal on it | ![netty's modules and the dependencies between them](docs/map.png) |
 
+### Focus mode
+
+The default keeps the untouched codebase around the change at 16% — you can see *where* in
+the system the plan lands. Turn on **Focus on the change while planning** (⚙, top right) and
+everything the proposal does not touch is left out instead of faded: the entities in play,
+the edges between them whether proposed or already there, and nothing else.
+
+| default — context kept | focused — same view, same framing |
+|---|---|
+| ![the change faded into its package](docs/focus-off.png) | ![only the entities in play](docs/focus-on.png) |
+
+`12 types · 11 edges` becomes `2 types · 1 edges · 10 hidden by focus`. Two things make it
+usable rather than disorienting:
+
+- **Containers on the path down are kept.** Their status is rolled up from the change below
+  them, so the top view still shows which module to open. Dropping them would empty the
+  upper levels and leave no way to reach the change — the opposite of focusing on it.
+- **The view still frames on the whole container.** The change appears where it actually
+  lives, and the empty space is honest: the rest of the package is there, it is just not
+  drawn. Framing on the two survivors instead would zoom until they overflowed the screen.
+
+Settings live in a `settings` table in the graph database, and a rescan carries them over —
+everything else in that file is derived from source and gets rewritten, but a setting is the
+one thing in there a person chose.
+
 Every status is carried by **colour, ring texture and a word** — doubled ring for an
 addition, solid for a change, dashed for a deletion, each spelled out in the panel. Green
 and red are the one pair hue cannot separate for a red-green colour blind reader, or in
@@ -220,6 +245,8 @@ The viewer is a client of this, and so is the MCP server.
 | `GET /api/tree?ref=&depth=&width=` | the containment tree, nested |
 | `GET /api/resolve?ref=<ref>` | id, name, qname and layer for any reference form |
 | `GET /api/search?q=<term>` | matching nodes across all layers |
+| `GET /api/settings` | user settings |
+| `POST /api/settings` | `{"key","value"}` — one setting, persisted |
 | `GET /api/proposal?since=<rev>` | the overlay; a matching revision answers `{"unchanged":true}` |
 | `POST /api/proposal/start` | `{"title"}` |
 | `POST /api/proposal/change` | one operation |
@@ -233,6 +260,8 @@ Two tables, as intended: everything the frontend draws is a row in one of them.
 nodes(id, layer, kind, name, qname, parent_id, path, lang, loc, x, y, r,
       in_deg, out_deg, children, files)
 edges(id, layer, src_id, dst_id, kind, weight, breakdown, parent_id)
+meta(key, value)          -- what the scan found; replaced by the next one
+settings(key, value)      -- what the user chose; carried across a rescan
 ```
 
 `files` packs one line per contributing file (`role<TAB>lines<TAB>path`). An edge's

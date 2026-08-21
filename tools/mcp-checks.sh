@@ -205,8 +205,11 @@ check "no proposal rows in nodes" 0 \
   "$(sqlite3 "$DB" "SELECT count(*) FROM nodes WHERE name='renderShadows';")"
 check "no proposal rows in edges" "$(sqlite3 "$DB" "SELECT count(*) FROM edges;")" \
   "$(sqlite3 "$DB" "SELECT count(*) FROM edges;")"
-check "no proposal table appeared" 3 \
-  "$(sqlite3 "$DB" "SELECT count(*) FROM sqlite_master WHERE type='table';")"
+# by name, not by count: the point is that no proposal table exists, and a count breaks
+# every time the schema legitimately gains one
+check "the schema is only what the scan and the user wrote" "edges|meta|nodes|settings" \
+  "$(sqlite3 "$DB" "SELECT group_concat(name,'|') FROM
+     (SELECT name FROM sqlite_master WHERE type='table' ORDER BY name);")"
 
 curl -fsS -X DELETE "http://127.0.0.1:$PORT/api/proposal" > /dev/null
 check "clearing empties the overlay" 0 \

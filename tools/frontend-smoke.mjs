@@ -629,6 +629,82 @@ check('going up repeatedly reaches the root',
     && untouched.every((n) => app.proposalAlpha(n) < 0.3),
     untouched.length + ' dimmed to ' + app.proposalAlpha(untouched[0]));
 
+  /*
+   * Focus mode: the same proposal, but everything it does not touch is left out rather than
+   * faded. The interesting invariants are that nothing survives without a status, that no
+   * edge is left pointing at something that was removed, and that the view still says what
+   * it is hiding.
+   */
+  {
+    await app.openView(pkg);
+    // measured against everything in the container, not the folded subset: focus is
+    // answering "what is in play", so what it left out includes what folding had already
+    // set aside
+    const before = (app.state.childrenOf.get(pkg.id) || []).length;
+    // observed, not derived: an earlier check may have left this container's fold open
+    const shownBefore = app.state.viewNodes.length;
+    el('set-planning-focus').checked = true;
+    el('set-planning-focus').fire('change', { target: { checked: true } });
+    await sleep(60);
+
+    check('focus mode is on and stored as yes', app.state.settings['planning.focus'] === 'yes'
+      && app.overlayActive(), 'planning.focus = ' + app.state.settings['planning.focus']);
+    check('only what the proposal touches is drawn',
+      app.state.viewNodes.length > 0 && app.state.viewNodes.every((n) => app.statusOf(n)),
+      `${app.state.viewNodes.length} of ${before} entities kept`);
+    check('the rest is left out, not faded',
+      app.state.focusedOut === before - app.state.viewNodes.length
+        && app.state.viewNodes.every((n) => app.proposalAlpha(n) === 1),
+      app.state.focusedOut + ' removed, nothing drawn at reduced alpha');
+    const drawnIds = new Set(app.state.viewNodes.map((n) => n.id));
+    check('no edge points at something that was removed',
+      app.state.viewEdges.every((e) => drawnIds.has(e.s) && drawnIds.has(e.d)),
+      app.state.viewEdges.length + ' edges, both ends drawn');
+    check('every connection between the kept entities is shown',
+      app.state.hiddenEdges.length === 0, 'no thinning while focused');
+    check('the rim only keeps what the proposal touches',
+      app.state.externals.every((x) => app.statusOf(x))
+        && app.state.externals.every((x) => x.links.every((l) => drawnIds.has(l.inner.id))),
+      app.state.externals.length + ' outside, all touched');
+    frame();
+    check('what it wants to add is still drawn', app.state.proposedNodes.length > 0
+      && app.batches.proposedNodes.count === app.state.proposedNodes.length,
+      app.state.proposedNodes.length + ' proposed');
+    check('the proposed connection is still drawn',
+      app.batches.proposedEdges.count === app.state.proposedEdges.length
+        && app.state.proposedEdges.length > 0,
+      app.state.proposedEdges.length + ' arrows');
+
+    // the rollup still has to work, or focusing removes the way in
+    await app.openView(null);
+    if (app.state.viewNodes.length === 1) await app.openView(app.state.viewNodes[0]);
+    check('the path down to the change survives focus',
+      app.state.viewNodes.length > 0 && app.state.viewNodes.every((n) => app.statusOf(n)),
+      app.state.viewNodes.map((n) => n.name).join(', ') + ' left at the top');
+    await app.openView(pkg);
+    // in a small view the proposal may touch everything, and then there is nothing to say
+    if (app.state.focusedOut === 0) {
+      note('the status line says what focus removed', 'focus removed nothing in this view');
+    } else {
+      check('the status line says what focus removed',
+        el('stats').innerHTML.includes('hidden by focus'),
+        el('stats').innerHTML.replace(/<[^>]+>/g, ''));
+    }
+
+    const stored = await fetch(BASE + '/api/settings').then((r) => r.json());
+    check('the setting reached the database', stored.settings['planning.focus'] === 'yes',
+      JSON.stringify(stored.settings));
+
+    // and off again: the proposal is untouched, the view comes back
+    el('set-planning-focus').checked = false;
+    el('set-planning-focus').fire('change', { target: { checked: false } });
+    await sleep(60);
+    check('turning it off restores the view',
+      app.state.viewNodes.length === shownBefore && app.state.focusedOut === 0
+        && app.state.proposal.changes.length === 4,
+      `${app.state.viewNodes.length} of ${shownBefore} entities back, proposal intact`);
+  }
+
   // switching the overlay off is a local view control, not a change to the proposal
   el('p-toggle').fire('click', {});
   check('the overlay can be switched off without withdrawing the proposal',

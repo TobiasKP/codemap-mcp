@@ -23,6 +23,7 @@ const GEO = {
   panelRadius: 10,
   prop: { top: 62, width: 316 },
   legend: { width: 300 },
+  settings: { top: 62, width: 330 },
 };
 
 /** Collects the text of an element and everything under it. */

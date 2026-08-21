@@ -96,6 +96,11 @@ const state = {
   /** what the view would hold untruncated, for the status line. */
   childCount: 0,
   edgeCount: 0,
+  /** how many entities focus mode left out of this view. */
+  focusedOut: 0,
+
+  /** user settings, as stored: string values, persisted with the graph. */
+  settings: {},
 };
 
 /** True when there is something to paint and the user has not switched it off. */
@@ -496,6 +501,7 @@ async function boot() {
   ingestNodes(l2.nodes); ingestEdges(LAYER.PACKAGE, l2.edges);
 
   document.title = 'codemap · ' + (state.meta.project_name || 'map');
+  await loadSettings();
   buildLegend();
   document.getElementById('loading').style.display = 'none';
   /*
@@ -679,6 +685,19 @@ function endpointInView(id, ref, inside, byRef, depth) {
 }
 
 /**
+ * Focus mode: while a proposal is up, leave everything it does not touch out of the view
+ * entirely rather than fading it.
+ *
+ * Dimming keeps the shape of the codebase as context, which is the right default - you can
+ * see *where* in the system the change lands. Focus mode is the opposite trade: it answers
+ * "what exactly is in play" and nothing else, which is what you want when reviewing rather
+ * than orienting. Both are useful, so it is a setting.
+ */
+function focusActive() {
+  return overlayActive() && state.settings['planning.focus'] === 'yes';
+}
+
+/**
  * How visible an untouched entity is while a proposal is up. This is the "everything else
  * recedes" half of the design: without it a green ring on one of 300 packages is a needle
  * in a haystack, and with it the eye lands on the change before it reads anything.
@@ -849,9 +868,17 @@ function buildView() {
   const container = state.container;
   // modules nest - an npm workspace holds packages that are themselves modules - so the
   // root shows the top-level ones and the rest open from their parent like anything else
-  const children = container
+  const all = container
     ? (state.childrenOf.get(container.id) || []).slice()
     : state.byLayer[1].filter((n) => !n.parent);
+  /*
+   * Focus keeps anything with a status, which includes containers that merely hold a change
+   * rather than being one. That is deliberate: their status is rolled up from below, and
+   * dropping them would empty the upper views and leave no way to drill down to the change
+   * at all - the opposite of focusing on it.
+   */
+  const children = focusActive() ? all.filter((n) => statusOf(n)) : all;
+  state.focusedOut = all.length - children.length;
   const fold = foldTail(children, container);
   const nodes = fold.shown;
   const inside = new Set(nodes.map((n) => n.id));
@@ -864,16 +891,38 @@ function buildView() {
       if (e.p === parentId && inside.has(e.s) && inside.has(e.d)) edges.push(e);
     }
   }
-  const split = thinEdges(edges);
+  // focus mode wants every edge between the entities in play, so no thinning: the kept set
+  // is small by construction and the connections are the point
+  const split = focusActive() ? { drawn: edges, hidden: [] } : thinEdges(edges);
 
   state.viewNodes = nodes;
   state.viewEdges = split.drawn;
   state.hiddenEdges = split.hidden;
   state.childCount = children.length;
   state.edgeCount = edges.length;
-  state.viewExtent = measureExtent(nodes);
+  /*
+   * Focus frames on everything the container holds, not on the handful it kept. Two
+   * reasons: the change then appears where it actually lives, so you keep your sense of
+   * place inside the package, and framing on two entities would otherwise zoom until they
+   * overflowed the screen. The empty space is honest - the rest of the package is there,
+   * it is just not drawn.
+   */
+  state.viewExtent = measureExtent(focusActive() && all.length ? all : nodes);
   state.foldMarker = container ? makeFoldMarker(container, nodes, fold.folded) : null;
-  state.externals = container ? computeExternals(container, inside) : [];
+  // computed against every child, not the focused subset: otherwise the siblings focus
+  // just removed would come back as a rim of dashed "outside" circles
+  const externals = container
+    ? computeExternals(container, new Set(all.map((n) => n.id))) : [];
+  state.externals = externals;
+  if (focusActive()) {
+    // an external's links point at the child the reference leaves from, and that child may
+    // be one focus dropped - so prune them, or the rim gets edges drawn from nothing
+    const drawn = new Set(nodes.map((n) => n.id));
+    state.externals = externals.filter((x) => statusOf(x));
+    for (const ext of state.externals) {
+      ext.links = ext.links.filter((l) => l.inner && drawn.has(l.inner.id));
+    }
+  }
   state.proposedNodes = placeAdditions(nodes, parentId);
   state.proposedEdges = routeConnections(inside);
   state.labelPrefix = dominantPrefix(nodes);
@@ -1105,6 +1154,23 @@ function fitView() {
   const margin = state.externals.length ? 1.34 : 1.06;
   fitToBounds(e.cx - e.r * margin, e.cy - e.r * margin,
     e.cx + e.r * margin, e.cy + e.r * margin);
+  capZoom();
+}
+
+/**
+ * Stops a view with almost nothing in it from zooming until that nothing fills the screen.
+ *
+ * Radii are in world units, so framing on a one-entity extent scales that entity up without
+ * limit - a class ends up a wall of colour with its own edge off-screen. An entity is a mark
+ * on a map; past a certain size it stops reading as one.
+ */
+function capZoom() {
+  let biggest = 0;
+  for (const n of state.viewNodes) biggest = Math.max(biggest, n.r);
+  for (const n of state.proposedNodes) biggest = Math.max(biggest, n.r);
+  if (biggest <= 0) return;
+  const shortest = Math.min(canvas.clientWidth, canvas.clientHeight);
+  state.view.scale = Math.min(state.view.scale, (shortest * 0.14) / biggest);
 }
 
 function fitToNodes(nodes, margin) {
@@ -1889,7 +1955,10 @@ window.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') { ev.target.blur(); closeResults(); }
     return;
   }
-  if (ev.key === 'Escape') clearSelection();
+  if (ev.key === 'Escape') {
+    settingsPanel.classList.remove('open');
+    clearSelection();
+  }
   else if (ev.key === 'Backspace') { ev.preventDefault(); goUp(); }
   else if (ev.key === 'f') { fitView(); requestRedraw(); }
   else if (ev.key === 'e') {
@@ -2228,6 +2297,55 @@ async function reveal(raw) {
   selectNode(node);
 }
 
+// --------------------------------------------------------------- settings
+
+const settingsPanel = document.getElementById('settings');
+
+/** The settings the server has stored, applied to the controls that show them. */
+async function loadSettings() {
+  try {
+    const data = await getJson('/api/settings');
+    state.settings = data.settings || {};
+  } catch (err) {
+    state.settings = {};                       // an older graph has no settings table
+  }
+  document.getElementById('set-planning-focus').checked =
+    state.settings['planning.focus'] === 'yes';
+}
+
+/**
+ * Stores one setting and applies it immediately.
+ *
+ * Values are strings because that is what the column holds, and a toggle stores "yes" or
+ * "no" rather than a boolean so that reading the table tells you what it means.
+ */
+async function saveSetting(key, value) {
+  state.settings[key] = value;
+  buildView();
+  updateStats();
+  buildLegend();
+  requestRedraw();
+  try {
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value }),
+    });
+  } catch (err) {
+    console.error('could not save ' + key, err);
+  }
+}
+
+document.getElementById('settings-btn').onclick = () => {
+  settingsPanel.classList.toggle('open');
+};
+document.getElementById('settings-close').onclick = () => {
+  settingsPanel.classList.remove('open');
+};
+document.getElementById('set-planning-focus').onchange = (ev) => {
+  saveSetting('planning.focus', ev.target.checked ? 'yes' : 'no');
+};
+
 // ---------------------------------------------------------- proposal panel
 
 /** A node's part in the proposal, in words - never colour alone. */
@@ -2494,7 +2612,10 @@ function buildLegend() {
   if (overlayActive()) edges.append(legendLine('Proposed', 'var(--prop-add)'));
 
   const hints = [];
-  if (overlayActive()) {
+  if (focusActive()) {
+    hints.push('Focused on the proposal — everything it does not touch is left out.'
+      + ' Turn it off in settings.');
+  } else if (overlayActive()) {
     hints.push('A proposal is on the map. Rings mark what it touches; the panel lists it.');
   } else {
     hints.push('Drag to pan · scroll to zoom · click to inspect · double-click to enter');
@@ -2579,6 +2700,9 @@ function updateStats() {
       ? `<b>${state.viewEdges.length}</b> of ${state.edgeCount} edges`
       : `<b>${state.edgeCount || state.viewEdges.length}</b> edges`,
   ];
+  if (state.focusedOut) {
+    parts.push(`<b>${state.focusedOut}</b> hidden by focus`);
+  }
   if (state.externals.length) parts.push(`<b>${state.externals.length}</b> outside`);
   if (overlayActive()) {
     parts.push(`<b>${state.proposal.changes.length}</b> proposed`);

@@ -57,6 +57,7 @@ class El {
     this.width = viewport.w;
     this.height = viewport.h;
     this.value = '';
+    this.checked = false;
   }
   get textContent() { return this._text; }
   set textContent(v) { this._text = String(v); this.children.length = 0; }

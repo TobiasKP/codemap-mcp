@@ -224,6 +224,26 @@
   #prop .op-delete { color: var(--prop-del); }
   #prop .op-mark   { color: var(--ink-muted); }
 
+  /* settings */
+  #settings {
+    top: 62px; right: 12px; width: 330px; padding: 12px 14px; z-index: 5; display: none;
+  }
+  #settings.open { display: block; }
+  #settings h2 { margin: 0 0 2px; font-size: 15px; }
+  #settings .hint { color: var(--ink-muted); font-size: 11px; margin-bottom: 12px; }
+  #settings-close { position: absolute; top: 8px; right: 10px; }
+  #settings .setting {
+    display: grid; grid-template-columns: auto 1fr; gap: 9px; align-items: start;
+    padding: 7px 6px; border-radius: 6px; cursor: pointer;
+  }
+  #settings .setting:hover { background: var(--block); }
+  #settings .setting input { margin-top: 2px; accent-color: var(--kind-class); }
+  #settings .setting b { display: block; font-weight: 600; }
+  #settings .setting em {
+    display: block; color: var(--ink-muted); font-style: normal; font-size: 11px;
+    margin-top: 2px;
+  }
+
   /* legend + status */
   #legend { bottom: 12px; left: 12px; padding: 9px 12px; z-index: 3; max-width: 300px; }
   #legend h4 { margin: 0 0 6px; font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
@@ -270,7 +290,23 @@
     <input id="search" type="search" placeholder="Search modules, packages, types" autocomplete="off">
     <div id="results"></div>
   </div>
+  <button class="btn" id="settings-btn" title="Settings" aria-haspopup="dialog">⚙</button>
 </div>
+
+<aside id="settings" class="panel" role="dialog" aria-label="Settings">
+  <button class="btn" id="settings-close" title="Close">✕</button>
+  <h2>Settings</h2>
+  <div class="hint">Saved with the graph, and kept when you rescan it.</div>
+  <label class="setting">
+    <input type="checkbox" id="set-planning-focus">
+    <span>
+      <b>Focus on the change while planning</b>
+      <em>While a proposal is on the map, draw only what it touches and the edges
+        between those entities — proposed or already there. Everything else is left
+        out rather than faded.</em>
+    </span>
+  </label>
+</aside>
 
 <aside id="side" class="panel" aria-live="polite">
   <button class="btn" id="closeside">✕</button>
