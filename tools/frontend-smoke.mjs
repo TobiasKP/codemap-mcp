@@ -225,7 +225,15 @@ const labelRects = () => el('labels').children
   .filter((c) => c.style.display !== 'none')
   .map((c) => {
     const m = /translate\((-?[\d.]+)px, (-?[\d.]+)px\)$/.exec(c.style.transform);
-    const width = c.textContent.length * 6.6 + 6;
+    // same per-class widths the stub ruler uses, so the checker and the placer agree
+    let em = 0;
+    for (const ch of c.textContent) {
+      if (/[A-Z0-9@#%&]/.test(ch)) em += 0.64;
+      else if (/[ijltIfr.,:;'`|!\[\]()-]/.test(ch)) em += 0.31;
+      else if (/[mwMW]/.test(ch)) em += 0.83;
+      else em += 0.53;
+    }
+    const width = em * 13 + 6;
     return { x1: +m[1] - width / 2, x2: +m[1] + width / 2, y1: +m[2] - 7.5, y2: +m[2] + 7.5 };
   });
 const countOverlaps = (rects) => {
@@ -410,6 +418,118 @@ while (app.state.container && steps < 12) {
 check('going up repeatedly reaches the root',
   app.state.container === null, steps + ' steps from ' + pkg.name);
 
+// ---- thinning and folding ----
+/*
+ * Both are truncation, so what matters is that they truncate the tail rather than the
+ * signal, and that they say so. A wide view exists in some projects and not others, so the
+ * folding half is conditional on finding one.
+ */
+{
+  const wide = app.state.byLayer[2].concat(app.state.byLayer[1])
+    .filter((n) => n.children > 40)
+    .sort((a, b) => b.children - a.children)[0];
+  if (!wide) {
+    note('a wide view folds its tail', 'no view in this project holds more than 40');
+  } else {
+    await app.openView(wide);
+    check('a wide view folds its tail',
+      app.state.viewNodes.length === 40 && app.state.foldMarker
+        && app.state.foldMarker.folded === wide.children - 40,
+      `${app.state.viewNodes.length} shown, ${app.state.foldMarker
+        && app.state.foldMarker.folded} folded of ${wide.children}`);
+    check('the fold marker says how much it hides',
+      /^\+\d+ more$/.test(app.state.foldMarker.name), app.state.foldMarker.name);
+    check('the status line states the truncation',
+      el('stats').innerHTML.includes('of ' + wide.children),
+      el('stats').innerHTML.replace(/<[^>]+>/g, ''));
+    // top-K by importance guarantees exactly this and nothing stronger
+    const rank = (n) => n.r * 2 + (n.in || 0) * 0.6 + (n.out || 0) * 0.2;
+    const kept = app.state.viewNodes;
+    const dropped = (app.state.childrenOf.get(wide.id) || [])
+      .filter((other) => !kept.includes(other));
+    check('what it keeps is what carries the view',
+      Math.min(...kept.map(rank)) >= Math.max(...dropped.map(rank)),
+      `weakest kept ${Math.min(...kept.map(rank)).toFixed(1)}`
+        + ` >= strongest dropped ${Math.max(...dropped.map(rank)).toFixed(1)}`);
+    frame();
+    check('the fold marker is drawn and hit-testable', app.batches.fold.count === 1
+      && app.pick(...app.worldToScreen(app.state.foldMarker.x, app.state.foldMarker.y))
+        === app.state.foldMarker, 'one marker, pickable');
+
+    // opening it is the way back to everything
+    const folded = app.state.foldMarker.folded;
+    await app.activate(app.state.foldMarker);
+    check('opening the fold shows the rest',
+      app.state.viewNodes.length === wide.children && !app.state.foldMarker,
+      `${app.state.viewNodes.length} of ${wide.children}, marker gone`);
+    check('the fold stays open for that container',
+      app.state.expandedFolds.has(wide.id), folded + ' were behind it');
+  }
+
+  /*
+   * Edge thinning needs a view whose edge count clears the floor *after* folding - folding
+   * removes the edges that touched what it folded away, which can drop a view back under
+   * the threshold. So open candidates and look at what the view actually holds rather than
+   * predicting it.
+   */
+  let dense = null;
+  const byEdges = app.state.byLayer[2]
+    .map((n) => ({ n, edges: app.state.edges[3].filter((e) => e.p === n.id).length }))
+    .filter((c) => c.edges > 60)
+    .sort((a, b) => b.edges - a.edges);
+  for (const candidate of byEdges.slice(0, 8)) {
+    await app.openView(candidate.n);
+    if (app.state.hiddenEdges.length > 0) { dense = candidate; break; }
+  }
+  if (!dense) {
+    note('a dense view thins its edges', 'no view in this project has more than 60');
+  } else {
+    await app.openView(dense.n);
+    const drawn = app.state.viewEdges.length;
+    const hidden = app.state.hiddenEdges.length;
+    check('a dense view thins its edges', hidden > 0 && drawn < app.state.edgeCount,
+      `${drawn} drawn, ${hidden} held back of ${app.state.edgeCount}`);
+
+    // the guarantee that makes thinning honest rather than a lie
+    const connected = new Set();
+    for (const e of app.state.viewEdges) { connected.add(e.s); connected.add(e.d); }
+    const hadEdges = new Set();
+    for (const e of app.state.viewEdges.concat(app.state.hiddenEdges)) {
+      hadEdges.add(e.s); hadEdges.add(e.d);
+    }
+    check('nothing that has a dependency is drawn as isolated',
+      [...hadEdges].every((id) => connected.has(id)),
+      hadEdges.size + ' entities with edges, all still connected');
+
+    const total = app.state.viewEdges.concat(app.state.hiddenEdges)
+      .reduce((sum, e) => sum + e.w, 0);
+    const kept = app.state.viewEdges.reduce((sum, e) => sum + e.w, 0);
+    check('the drawn edges carry most of the weight', kept / total >= 0.85,
+      `${(100 * kept / total).toFixed(1)}% of the weight in `
+        + `${(100 * drawn / (drawn + hidden)).toFixed(0)}% of the edges`);
+    check('the status line states the truncation',
+      el('stats').innerHTML.includes('of ' + app.state.edgeCount + ' edges'),
+      el('stats').innerHTML.replace(/<[^>]+>/g, ''));
+
+    frame();
+    const restingDraws = app.batches.edgesHidden.count;
+    check('the tail is buffered but not drawn at rest',
+      restingDraws > 0 && !app.state.showAllEdges, restingDraws + ' held in a batch');
+
+    // hovering an entity puts its own share of the tail back
+    const withHidden = app.state.viewNodes.find((n) =>
+      app.state.hiddenEdges.some((e) => e.s === n.id || e.d === n.id));
+    if (withHidden) {
+      const [hx, hy] = app.worldToScreen(withHidden.x, withHidden.y);
+      el('map').fire('pointermove', { clientX: hx, clientY: hy });
+      frame();
+      check('hovering an entity reveals its hidden edges',
+        app.batches.edgesHovered.count > 0,
+        app.batches.edgesHovered.count + ' edges for ' + withHidden.name);
+    }
+  }
+}
+
 // ---- the proposal overlay ----
 /*
  * A change drawn on the map rather than described. The two things worth proving are that a
@@ -478,9 +598,12 @@ check('going up repeatedly reaches the root',
   app.clearSelection();
   app.updateLabels();
   const labelled = el('labels').children.filter((c) => c.style.display !== 'none');
+  // the fold marker is always named, proposal or not: a truncation you cannot see is worse
+  // than the clutter it removed
   const lit = app.state.viewNodes.filter((n) => app.statusOf(n)).length
     + app.state.externals.filter((x) => app.statusOf(x)).length
-    + app.state.proposedNodes.length;
+    + app.state.proposedNodes.length
+    + (app.state.foldMarker ? 1 : 0);
   check('only what the proposal touches keeps a label', labelled.length === lit,
     `${labelled.length} labels, ${lit} lit, `
       + `${app.state.viewNodes.length + app.state.externals.length} entities in view`);

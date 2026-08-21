@@ -105,6 +105,11 @@ export function chromeOps({ app, el, width, height, palette }) {
       trail = '… ' + crumbs.join(' ');
     }
     if (trail) text(x, y + 10, 12, ink2, trail);
+    // the prefix every label in the view has had removed, shown once. Without it a still
+    // reads "CODEC-HTTP" with no way to know the name is really "netty-codec-http".
+    const prefix = deepText(el('prefix'));
+    if (prefix) text(x + trail.length * 6.4 + 14, y + 10, 11, muted, prefix);
+
     // #stats is set through innerHTML, so its text still carries the <b> markup
     const stats = deepText(el('stats')).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
     if (stats) text(GEO.pad + 11, y + 10, 12, muted, stats, { align: 'right' });
@@ -373,23 +378,23 @@ function fsExists(f) {
  */
 function labelOps(el, { width, height, palette }) {
   const STYLE = {
-    district: { size: 13, role: '--ink-2', upper: true },
-    block: { size: 12, role: '--ink-2', upper: false },
-    type: { size: 12, role: '--ink', upper: false },
-    port: { size: 12, role: '--ink', upper: false },
-    prop: { size: 13, role: '--prop-add', upper: false },
+    district: { size: 13, role: '--ink-2' },
+    block: { size: 13, role: '--ink-2' },
+    type: { size: 13, role: '--ink' },
+    port: { size: 13, role: '--ink' },
+    prop: { size: 13, role: '--prop-add' },
+    fold: { size: 13, role: '--ink-muted' },
   };
   const out = [];
   for (const node of el('labels').children || []) {
     if (node.style.display === 'none') continue;
     const m = /translate\((-?[\d.]+)px, (-?[\d.]+)px\)$/.exec(node.style.transform || '');
     if (!m) continue;
-    const cls = ['prop', 'port', 'district', 'block', 'type']
+    const cls = ['prop', 'port', 'fold', 'district', 'block', 'type']
       .find((c) => (node.className || '').includes(c)) || 'type';
     const style = STYLE[cls];
     // the font has no U+21E2, and a tofu box in the middle of the map looks like a bug
-    let value = (node.textContent || '').replace(/⇢/g, '->');
-    if (style.upper) value = value.toUpperCase();
+    const value = (node.textContent || '').replace(/⇢/g, '->');
     if (!value) continue;
     out.push({
       x: +m[1] - width / 2, y: +m[2] - height / 2,

@@ -145,10 +145,20 @@ export function createRasteriser({ app, width, height, palette }) {
       });
     }
 
+    const edgeWidth = level === 1 ? 2.2 : (level === 2 ? 1.8 : 1.4);
+    const edgeFade = dim * (overlay ? 0.22 : 1);
+    if (app.state.showAllEdges) {
+      playEdges(app.batches.edgesHidden, {
+        color: parse(palette['--edge']),
+        alpha: edgeAlpha(app.batches.edgesHidden.count + app.batches.edges.count)
+          * edgeFade * 0.7,
+        width: edgeWidth,
+      });
+    }
     playEdges(app.batches.edges, {
       color: parse(palette['--edge']),
-      alpha: edgeAlpha(app.batches.edges.count) * dim * (overlay ? 0.22 : 1),
-      width: level === 1 ? 2.2 : (level === 2 ? 1.8 : 1.4),
+      alpha: edgeAlpha(app.batches.edges.count) * edgeFade,
+      width: edgeWidth,
     });
 
     if (!isArea) {
@@ -169,6 +179,14 @@ export function createRasteriser({ app, width, height, palette }) {
         hollow: false,
       });
       playDiscs(app.batches.externals, { alpha: dim, minPx: 7, dash: 13 });
+    }
+
+    if (app.batches.fold.count) {
+      playDiscs(app.batches.fold, {
+        override: parse(palette['--canvas']), overrideAlpha: dim, minPx: 9, padPx: 3,
+        hollow: false,
+      });
+      playDiscs(app.batches.fold, { alpha: 0.9 * dim, minPx: 9 });
     }
 
     // the proposal overlay. The taper on a proposed edge is a vertex-shader effect and is

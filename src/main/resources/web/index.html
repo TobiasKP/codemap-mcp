@@ -108,13 +108,19 @@
     text-shadow: 0 0 3px var(--canvas), 0 0 3px var(--canvas), 0 0 6px var(--canvas);
     will-change: transform;
   }
-  .lbl.district { font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-2); }
+  /* no text-transform: the label text is uppercased in JS so that what the placer
+     measures is what the browser draws */
+  .lbl.district { font-weight: 650; letter-spacing: .04em; color: var(--ink-2); }
   .lbl.block    { font-weight: 550; color: var(--ink-2); }
   .lbl.type     { color: var(--ink); }
   .lbl.port     { font-weight: 600; color: var(--ink); pointer-events: auto; cursor: pointer; }
   .lbl.port:hover { text-decoration: underline; }
   /* a proposed node does not exist yet, so its label says so */
   .lbl.prop     { font-weight: 600; font-style: italic; color: var(--prop-add); }
+  /* the folded tail: a count you can open */
+  .lbl.fold     { font-weight: 600; color: var(--ink-muted); pointer-events: auto;
+                  cursor: pointer; }
+  .lbl.fold:hover { text-decoration: underline; }
 
   /* chrome */
   .panel {

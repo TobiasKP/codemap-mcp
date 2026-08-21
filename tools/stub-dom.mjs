@@ -144,8 +144,27 @@ export function createEnvironment(opts) {
   const canvasEl = el('map');
   canvasEl.getContext = () => glStub;
 
-  // the label ruler measures text with a 2D context; approximate it by character count
-  const ruler2d = { font: '', measureText: (t) => ({ width: t.length * 6.6 }) };
+  /*
+   * The label placer measures text with a 2D context. A flat per-character estimate is not
+   * good enough: capitals run about a quarter wider than lowercase, so a flat average
+   * under-reserves for a view of uppercase module names and the offline stills come out
+   * with labels overlapping that a browser would have placed apart. Widths are per-class
+   * fractions of the em, which lands within a few percent of a real sans-serif face.
+   */
+  const ruler2d = {
+    font: '',
+    measureText(text) {
+      const size = parseFloat((/(\d+(?:\.\d+)?)px/.exec(this.font || '') || [])[1] || '13');
+      let em = 0;
+      for (const ch of String(text)) {
+        if (/[A-Z0-9@#%&]/.test(ch)) em += 0.64;
+        else if (/[ijltIfr.,:;'`|!\[\]()-]/.test(ch)) em += 0.31;
+        else if (/[mwMW]/.test(ch)) em += 0.83;
+        else em += 0.53;
+      }
+      return { width: em * size };
+    },
+  };
 
   const rafQueue = [];
   const root = new El('html', viewport);
@@ -205,7 +224,8 @@ export function createEnvironment(opts) {
 ;globalThis.__app = { state, batches, render, pick, updateLabels, fitView, goUp, activate,
   openView, buildView, computeExternals, loadChildren, isInside, selectNode, clearSelection,
   worldToScreen, screenToWorld, zoomBy, flyToNode, kindOf, palette: () => palette,
-  pollProposal, overlayActive, statusOf, proposalAlpha, updateProposalPanel, STATUS }`;
+  pollProposal, overlayActive, statusOf, proposalAlpha, updateProposalPanel, STATUS,
+  ingestNodes }`;
   vm.createContext(context);
   vm.runInContext(source + exposed, context, { filename: 'app.js' });
   const app = context.globalThis.__app;

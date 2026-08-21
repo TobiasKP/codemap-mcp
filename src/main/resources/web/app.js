@@ -87,6 +87,15 @@ const state = {
   /** the additions this view draws, and the proposed edges between things in it. */
   proposedNodes: [],
   proposedEdges: [],
+
+  /** the tail this view is not drawing, and the way back to it. */
+  hiddenEdges: [],
+  showAllEdges: false,
+  foldMarker: null,
+  expandedFolds: new Set(),
+  /** what the view would hold untruncated, for the status line. */
+  childCount: 0,
+  edgeCount: 0,
 };
 
 /** True when there is something to paint and the user has not switched it off. */
@@ -326,6 +335,10 @@ const batches = {
   statusMark: makeBatch(8),
   proposedNodes: makeBatch(8),
   proposedEdges: makeBatch(5),
+  /** the thinned-away edges, and the marker standing in for a folded tail. */
+  edgesHidden: makeBatch(5),
+  edgesHovered: makeBatch(5),
+  fold: makeBatch(8),
 };
 
 // ------------------------------------------------------------------ palette
@@ -429,20 +442,37 @@ async function getJson(url) {
   return res.json();
 }
 
+/**
+ * Files a node under its parent, once.
+ *
+ * A stub is not filed, because it is a placeholder for an edge endpoint we have not really
+ * loaded. The subtlety is what happens when the real thing arrives afterwards: it used to
+ * be un-stubbed in place and never filed, so any node that happened to be referenced from
+ * another view before its own view was opened went missing from its parent's child list for
+ * the rest of the session. That silently under-reported a container's contents - 325 of a
+ * package's 338 types, with no error anywhere.
+ */
+function register(node) {
+  if (node.filed) return;
+  node.filed = true;
+  let siblings = state.childrenOf.get(node.parent);
+  if (!siblings) { siblings = []; state.childrenOf.set(node.parent, siblings); }
+  siblings.push(node);
+}
+
 function ingestNodes(list) {
   for (const n of list) {
     const existing = state.nodes.get(n.id);
     if (existing) {
-      if (existing.stub && !n.stub) Object.assign(existing, n, { stub: false });
+      if (existing.stub && !n.stub) {
+        Object.assign(existing, n, { stub: false });
+        register(existing);
+      }
       continue;
     }
     state.nodes.set(n.id, n);
     state.byLayer[n.layer].push(n);
-    if (!n.stub) {
-      let siblings = state.childrenOf.get(n.parent);
-      if (!siblings) { siblings = []; state.childrenOf.set(n.parent, siblings); }
-      siblings.push(n);
-    }
+    if (!n.stub) register(n);
   }
 }
 
@@ -658,6 +688,109 @@ function proposalAlpha(node) {
   return statusOf(node) ? 1 : 0.16;
 }
 
+// -------------------------------------------------------- thinning and folding
+
+/*
+ * Two ways a view stops being readable, and they need different answers.
+ *
+ * Too many EDGES is a density problem, and dependency weight is brutally skewed: measured
+ * on netty's module graph, the heaviest 10% of edges carry 71.7% of the total weight. So
+ * drawing the tail costs most of the ink and buys almost none of the information. At rest
+ * we draw the edges that carry the view and keep the rest one keypress away.
+ *
+ * Too many ENTITIES is a different problem - no alpha or threshold saves a view of 338
+ * circles, because each one still needs a position and a label. That one is answered by
+ * folding: show what carries the view, and say out loud how much was folded away.
+ *
+ * Both are truncation, so both are stated in the status line. A silent cap reads as "this
+ * is everything" and is worse than the clutter it removes.
+ */
+const FOLD_LIMIT = 40;
+const EDGE_FLOOR = 60;
+/** the share of total edge weight the drawn edges must account for. */
+const EDGE_SHARE = 0.85;
+
+/** How much an entity carries its view: how big it is, and how much depends on it. */
+function importanceOf(node) {
+  return (node.r || 0) * 2 + (node.in || 0) * 0.6 + (node.out || 0) * 0.2;
+}
+
+/** The entities worth drawing, plus how many were folded away behind the marker. */
+function foldTail(children, container) {
+  if (!container || children.length <= FOLD_LIMIT
+      || state.expandedFolds.has(container.id)) {
+    return { shown: children, folded: 0 };
+  }
+  // ranked the same way labels are, so the things drawn are the things named
+  const ranked = children.slice().sort((a, b) => importanceOf(b) - importanceOf(a));
+  return { shown: ranked.slice(0, FOLD_LIMIT), folded: children.length - FOLD_LIMIT };
+}
+
+/**
+ * Splits a view's edges into the ones drawn at rest and the tail.
+ *
+ * Every entity keeps its single heaviest link whatever the threshold says. Without that
+ * guarantee thinning can leave a node looking unconnected when it is not, which is a lie
+ * rather than a simplification - and the whole point of dropping guessed edges elsewhere in
+ * this project is that the map does not lie about connections.
+ */
+function thinEdges(edges) {
+  if (edges.length <= EDGE_FLOOR) return { drawn: edges, hidden: [] };
+  const sorted = edges.slice().sort((a, b) => b.w - a.w);
+  const total = sorted.reduce((sum, e) => sum + e.w, 0);
+
+  const keep = new Set();
+  const heaviest = new Map();
+  for (const e of sorted) {                    // sorted desc, so first seen is heaviest
+    if (!heaviest.has(e.s)) heaviest.set(e.s, e);
+    if (!heaviest.has(e.d)) heaviest.set(e.d, e);
+  }
+  for (const e of heaviest.values()) keep.add(e);
+
+  let acc = 0;
+  for (const e of keep) acc += e.w;
+  for (const e of sorted) {
+    if (acc >= total * EDGE_SHARE) break;
+    if (keep.has(e)) continue;
+    keep.add(e);
+    acc += e.w;
+  }
+  return {
+    drawn: sorted.filter((e) => keep.has(e)),
+    hidden: sorted.filter((e) => !keep.has(e)),
+  };
+}
+
+/** The marker standing in for the folded tail: a door, not a participant. */
+function makeFoldMarker(container, shown, folded) {
+  if (!folded) return null;
+  const extent = state.viewExtent;
+  const radii = shown.map((n) => n.r).sort((a, b) => a - b);
+  const r = radii.length ? radii[Math.floor(radii.length * 0.75)]
+    : Math.max(extent.r * 0.1, 4);
+  const spot = freeSpot(shown, [], extent, r);
+  return {
+    id: 'fold:' + container.id,
+    isFold: true,
+    folded,
+    name: '+' + folded + ' more',
+    qname: '',
+    kind: 'FOLD',
+    layer: state.level,
+    in: 0,
+    out: 0,
+    x: spot.x,
+    y: spot.y,
+    r,
+  };
+}
+
+/** The hidden edges touching one entity, so hovering it reveals what was thinned away. */
+function hiddenEdgesFor(node) {
+  if (!node || !state.hiddenEdges.length) return [];
+  return state.hiddenEdges.filter((e) => e.s === node.id || e.d === node.id);
+}
+
 // ------------------------------------------------------------------ the view
 
 function moduleOf(node) {
@@ -716,9 +849,11 @@ function buildView() {
   const container = state.container;
   // modules nest - an npm workspace holds packages that are themselves modules - so the
   // root shows the top-level ones and the rest open from their parent like anything else
-  const nodes = container
+  const children = container
     ? (state.childrenOf.get(container.id) || []).slice()
     : state.byLayer[1].filter((n) => !n.parent);
+  const fold = foldTail(children, container);
+  const nodes = fold.shown;
   const inside = new Set(nodes.map((n) => n.id));
   const parentId = container ? container.id : 0;
 
@@ -729,10 +864,15 @@ function buildView() {
       if (e.p === parentId && inside.has(e.s) && inside.has(e.d)) edges.push(e);
     }
   }
+  const split = thinEdges(edges);
 
   state.viewNodes = nodes;
-  state.viewEdges = edges;
+  state.viewEdges = split.drawn;
+  state.hiddenEdges = split.hidden;
+  state.childCount = children.length;
+  state.edgeCount = edges.length;
   state.viewExtent = measureExtent(nodes);
+  state.foldMarker = container ? makeFoldMarker(container, nodes, fold.folded) : null;
   state.externals = container ? computeExternals(container, inside) : [];
   state.proposedNodes = placeAdditions(nodes, parentId);
   state.proposedEdges = routeConnections(inside);
@@ -767,7 +907,10 @@ function dominantPrefix(nodes) {
     const name = node.name || '';
     for (let i = 0; i < name.length; i++) {
       const ch = name[i];
-      if (ch !== '.' && ch !== '/') continue;
+      // '-' counts as a separator too: build-unit names are hyphenated far more often than
+      // dotted (netty-transport-native-epoll, @scope/pkg-core), and without it a view of
+      // module names repeats the project's own name on every label
+      if (ch !== '.' && ch !== '/' && ch !== '-') continue;
       const candidate = name.slice(0, i + 1);
       if (candidate.length < 4) continue;
       counts.set(candidate, (counts.get(candidate) || 0) + 1);
@@ -789,6 +932,7 @@ function labelFor(node) {
   const prefix = state.labelPrefix;
   if (prefix && text.startsWith(prefix)) text = text.slice(prefix.length);
   text = shortenLeft(text, 34);
+  if (node.isFold) return node.name;
   if (node.isProposed) return '+ ' + text;
   return node.isExternal ? '\u21e2 ' + text : text;
 }
@@ -1058,6 +1202,19 @@ function zoomBy(factor, sx, sy) {
 
 // ------------------------------------------------------------------ buffers
 
+/** Packs an edge list into an instance buffer, skipping any endpoint not loaded. */
+function uploadEdges(batch, edges) {
+  const arr = new Float32Array(edges.length * 5);
+  let i = 0;
+  for (const e of edges) {
+    const a = state.nodes.get(e.s);
+    const b = state.nodes.get(e.d);
+    if (!a || !b) continue;
+    arr[i++] = a.x; arr[i++] = a.y; arr[i++] = b.x; arr[i++] = b.y; arr[i++] = e.w;
+  }
+  uploadBatch(batch, arr.subarray(0, i), i / 5);
+}
+
 function rebuildBuffers() {
   const nodes = state.viewNodes;
   const arr = new Float32Array(nodes.length * 8);
@@ -1072,16 +1229,17 @@ function rebuildBuffers() {
   uploadBatch(batches.nodes, arr, nodes.length);
   rebuildProposalBuffers();
 
-  const edges = state.viewEdges;
-  const earr = new Float32Array(edges.length * 5);
-  let j = 0;
-  for (const e of edges) {
-    const a = state.nodes.get(e.s);
-    const b = state.nodes.get(e.d);
-    if (!a || !b) continue;
-    earr[j++] = a.x; earr[j++] = a.y; earr[j++] = b.x; earr[j++] = b.y; earr[j++] = e.w;
+  uploadEdges(batches.edges, state.viewEdges);
+  uploadEdges(batches.edgesHidden, state.hiddenEdges);
+
+  if (state.foldMarker) {
+    const f = state.foldMarker;
+    const color = palette['--ink-muted'];
+    uploadBatch(batches.fold, new Float32Array(
+      [f.x, f.y, f.r, SHAPE.RING, color[0], color[1], color[2], 1]), 1);
+  } else {
+    batches.fold.count = 0;
   }
-  uploadBatch(batches.edges, earr.subarray(0, j), j / 5);
 
   const exts = state.externals;
   const xarr = new Float32Array(exts.length * 8);
@@ -1253,9 +1411,16 @@ function drawEdges(batch, opts) {
   gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, batch.count);
 }
 
-/** Faint edges get lost in a sparse view and turn to mush in a dense one. */
+/**
+ * Faint edges get lost in a sparse view; strong ones accumulate into felt in a dense one.
+ *
+ * The boost used to reach 8, which against an edge colour already carrying alpha 0.07 put a
+ * single line at 0.56 - so five overlapping lines were effectively opaque and a view with
+ * only 57 edges read as a grey mesh. The ceiling is now low enough that overlap reads as
+ * density rather than as ink.
+ */
 function edgeAlpha(count) {
-  return Math.max(1, Math.min(8, 40 / Math.sqrt(count + 1)));
+  return Math.max(0.55, Math.min(3, 14 / Math.sqrt(count + 1)));
 }
 
 function render(now) {
@@ -1307,10 +1472,24 @@ function renderFrame(now) {
 
   // existing dependencies fade back under a proposal: what matters then is what the
   // proposal touches, and full-strength edges everywhere drown the overlay out
+  const edgeWidth = level === LAYER.MODULE ? 2.2 : (level === LAYER.PACKAGE ? 1.8 : 1.4);
+  const edgeFade = dim * (overlayActive() ? 0.22 : 1);
+  // the thinned-away tail, on request or around whatever the cursor is on
+  if (state.showAllEdges) {
+    drawEdges(batches.edgesHidden, {
+      color: palette['--edge'],
+      alpha: edgeAlpha(batches.edgesHidden.count + batches.edges.count) * edgeFade * 0.7,
+      width: edgeWidth,
+    });
+  } else {
+    drawEdges(batches.edgesHovered, {
+      color: palette['--edge'], alpha: 1.6 * edgeFade, width: edgeWidth, dashPx: 7,
+    });
+  }
   drawEdges(batches.edges, {
     color: palette['--edge'],
-    alpha: edgeAlpha(batches.edges.count) * dim * (overlayActive() ? 0.22 : 1),
-    width: level === LAYER.MODULE ? 2.2 : (level === LAYER.PACKAGE ? 1.8 : 1.4),
+    alpha: edgeAlpha(batches.edges.count) * edgeFade,
+    width: edgeWidth,
   });
 
   if (!isArea) {
@@ -1322,6 +1501,14 @@ function renderFrame(now) {
   }
 
   drawExternals(dim);
+  // the folded tail: an outline you can open, drawn like a container because that is what
+  // it is - the rest of this view's contents
+  if (batches.fold.count) {
+    drawDiscs(batches.fold, {
+      override: palette['--canvas'], overrideAlpha: dim, minPx: 9, padPx: 3, hollow: false,
+    });
+    drawDiscs(batches.fold, { alpha: 0.9 * dim, minPx: 9 });
+  }
   drawProposal();
   drawHighlight();
 
@@ -1467,6 +1654,14 @@ function updateLabels() {
       priority: 2e6,                            // a thing that does not exist yet needs a name
     });
   }
+  if (state.foldMarker) {
+    // truncation has to be visible, so this label is never dropped for budget
+    const [sx, sy] = worldToScreen(state.foldMarker.x, state.foldMarker.y);
+    candidates.push({
+      node: state.foldMarker, sx, sy,
+      rPx: Math.max(state.foldMarker.r * scale, 9), cls: 'fold', priority: 3e6,
+    });
+  }
   for (const ext of state.externals) {
     // an untouched way out is context, and context is exactly what recedes under a proposal
     if (overlay && !statusOf(ext)) continue;
@@ -1494,6 +1689,10 @@ function updateLabels() {
     const must = forced.has(c.node);
     if (shown.length >= LABEL_BUDGET && !must) continue;
     let text = labelFor(c.node);
+    // Uppercase here rather than in CSS. text-transform changes what is rendered but not
+    // what measureText() sees, so the placer reserved the mixed-case width and then the
+    // browser drew something ~20% wider - which is why module labels collided.
+    if (c.cls === 'district') text = text.toUpperCase();
     if (!text) continue;
     /*
      * A big area holds its own label, truncated to fit: a 30-character module name is
@@ -1502,7 +1701,8 @@ function updateLabels() {
      * beside itself. Container sizes track their content, so a project's modules span
      * more than an order of magnitude and both cases occur in the same view.
      */
-    const holdsItsLabel = isArea && c.cls !== 'port' && c.cls !== 'prop' && c.rPx >= 34;
+    const holdsItsLabel = isArea && !['port', 'prop', 'fold'].includes(c.cls)
+      && c.rPx >= 34;
     if (holdsItsLabel) {
       text = fitToWidth(text, c.rPx * 1.8, font);
       if (!text) continue;
@@ -1583,6 +1783,10 @@ function pick(sx, sy) {
   const slack = 4 / state.view.scale;
   const floor = 7 / state.view.scale;
 
+  if (state.foldMarker) {
+    const f = state.foldMarker;
+    if (Math.hypot(f.x - wx, f.y - wy) <= Math.max(f.r, floor) + slack) return f;
+  }
   // proposed nodes first: they are drawn on top, so they should be clickable on top
   for (const node of state.proposedNodes) {
     if (Math.hypot(node.x - wx, node.y - wy) <= Math.max(node.r, floor) + slack) return node;
@@ -1626,6 +1830,9 @@ canvas.addEventListener('pointermove', (ev) => {
   if (hit !== state.hover) {
     state.hover = hit;
     showTooltip(hit, ev.clientX, ev.clientY);
+    // thinning hides the long tail, so hovering an entity puts its own share of it back
+    uploadEdges(batches.edgesHovered, hiddenEdgesFor(hit));
+    requestRedraw();
   } else if (hit) {
     positionTooltip(ev.clientX, ev.clientY);
   }
@@ -1651,6 +1858,14 @@ canvas.addEventListener('dblclick', (ev) => {
 
 /** What a double-click means: open the level below, or travel to a dashed external. */
 async function activate(node) {
+  if (node.isFold) {                                     // open the folded tail in place
+    state.expandedFolds.add(state.container.id);
+    buildView();
+    updateStats();
+    fitView();
+    requestRedraw();
+    return;
+  }
   if (node.isProposed) { flyToNode(node, 5); return; }   // nothing to open: it is a plan
   if (node.isExternal) {
     const target = state.nodes.get(node.targetId);
@@ -1677,6 +1892,12 @@ window.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape') clearSelection();
   else if (ev.key === 'Backspace') { ev.preventDefault(); goUp(); }
   else if (ev.key === 'f') { fitView(); requestRedraw(); }
+  else if (ev.key === 'e') {
+    state.showAllEdges = !state.showAllEdges;
+    updateStats();
+    buildLegend();
+    requestRedraw();
+  }
   else if (ev.key === '+' || ev.key === '=') zoomBy(1.3);
   else if (ev.key === '-') zoomBy(1 / 1.3);
   else if (ev.key === '/') { ev.preventDefault(); document.getElementById('search').focus(); }
@@ -1720,6 +1941,7 @@ document.getElementById('theme').onclick = () => {
 // ------------------------------------------------------------- selection
 
 function selectNode(node) {
+  if (node && node.isFold) return;      // a door has nothing to inspect
   state.selected = node;
   rebuildHighlight();
   showDetails(node);
@@ -1815,7 +2037,10 @@ function showTooltip(node, x, y) {
   name.textContent = node.name;
   const meta = document.createElement('div');
   meta.className = 'k';
-  if (node.isProposed) {
+  if (node.isFold) {
+    meta.textContent = `${node.folded} more in this view, folded away`
+      + ' · double-click to show them';
+  } else if (node.isProposed) {
     meta.textContent = `proposed ${niceKind(node.kind)} · does not exist yet`
       + (node.note ? ' · ' + node.note : '');
   } else if (node.isExternal) {
@@ -2268,9 +2493,22 @@ function buildLegend() {
   );
   if (overlayActive()) edges.append(legendLine('Proposed', 'var(--prop-add)'));
 
-  document.getElementById('legend-hint').textContent = overlayActive()
-    ? 'A proposal is on the map. Rings mark what it touches; the panel on the left lists it.'
-    : 'Drag to pan · scroll to zoom · click to inspect · double-click to enter';
+  const hints = [];
+  if (overlayActive()) {
+    hints.push('A proposal is on the map. Rings mark what it touches; the panel lists it.');
+  } else {
+    hints.push('Drag to pan · scroll to zoom · click to inspect · double-click to enter');
+  }
+  if (state.hiddenEdges.length) {
+    hints.push(state.showAllEdges
+      ? 'Showing every edge — press e for the ones that carry the view'
+      : `Showing the edges that carry the view · press e for all ${state.edgeCount}`
+        + ' · hover an entity for its own');
+  }
+  if (state.foldMarker) {
+    hints.push(`${state.foldMarker.folded} more folded — double-click the outline to open`);
+  }
+  document.getElementById('legend-hint').textContent = hints.join(' · ');
 }
 
 function legendItem(label, color, shape) {
@@ -2331,9 +2569,15 @@ function updateStats() {
   const el = document.getElementById('stats');
   const m = state.meta;
   const label = ['', 'modules', 'packages', 'types', 'functions'][state.level] || 'entities';
+  const folded = state.foldMarker ? state.foldMarker.folded : 0;
+  const hidden = state.hiddenEdges.length;
   const parts = [
-    `<b>${state.viewNodes.length}</b> ${label}`,
-    `<b>${state.viewEdges.length}</b> edges`,
+    folded
+      ? `<b>${state.viewNodes.length}</b> of ${state.childCount} ${label}`
+      : `<b>${state.viewNodes.length}</b> ${label}`,
+    hidden && !state.showAllEdges
+      ? `<b>${state.viewEdges.length}</b> of ${state.edgeCount} edges`
+      : `<b>${state.edgeCount || state.viewEdges.length}</b> edges`,
   ];
   if (state.externals.length) parts.push(`<b>${state.externals.length}</b> outside`);
   if (overlayActive()) {

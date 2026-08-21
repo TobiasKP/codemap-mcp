@@ -10,6 +10,7 @@
  *   node tools/preview.mjs --url http://localhost:7777 --zoom class    # a class's functions
  *   node tools/preview.mjs --url http://localhost:7777 --zoom package --dark
  *   node tools/preview.mjs --url http://localhost:7777 --chrome --out shot.png   # + panels
+ *   node tools/preview.mjs --url http://localhost:7777 --open io.netty.channel  # one view
  *
  * One blind spot worth knowing: it rasterises through worldToScreen(), so it cannot see a
  * vertex shader that disagrees with worldToScreen() about the screen transform. The smoke
@@ -29,6 +30,8 @@ const flag = (name) => args.includes('--' + name);
 const BASE = opt('url', 'http://localhost:7777');
 const OUT = opt('out', 'map.png');
 const ZOOM = opt('zoom', 'world');      // world | module | package | class
+// a specific container by id or qualified name, for a reproducible before/after shot
+const OPEN = opt('open', '');
 const WIDTH = +opt('width', 1440);
 const HEIGHT = +opt('height', 900);
 const DARK = flag('dark');
@@ -62,7 +65,17 @@ if (!await until(() => app.state.meta.project_name)) {
 }
 frame();
 
-if (ZOOM === 'module' || ZOOM === 'package' || ZOOM === 'class') {
+if (OPEN) {
+  const target = await fetch(BASE + '/api/resolve?ref=' + encodeURIComponent(OPEN))
+    .then((r) => r.json());
+  if (!target.id) {
+    console.error(`cannot resolve --open ${OPEN}: ${target.error || 'not found'}`);
+    process.exit(1);
+  }
+  const detail = await fetch(BASE + '/api/node?id=' + target.id).then((r) => r.json());
+  app.ingestNodes([...(detail.parents || []).slice().reverse(), detail.node]);
+  await app.openView(app.state.nodes.get(target.id));
+} else if (ZOOM === 'module' || ZOOM === 'package' || ZOOM === 'class') {
   // boot may already have opened into the single top-level module, in which case the
   // "module" step is where we started
   if (!app.state.container) {

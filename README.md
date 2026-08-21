@@ -142,8 +142,9 @@ depth:
 project ─▶ module ─▶ name-path group ─▶ … ─▶ package ─▶ class ─▶ function
 ```
 
-Double-click to open, `Backspace` to go up, `f` to refit, `/` to search. A package holding
-both sub-packages and its own classes shows both, as a folder shows folders and files.
+Double-click to open, `Backspace` to go up, `f` to refit, `e` for every edge, `/` to search.
+A package holding both sub-packages and its own classes shows both, as a folder shows
+folders and files.
 
 - **Packages are grouped by their name path**, which is what makes a large project
   navigable: a module with hundreds of packages is not a view anyone can read, but those
@@ -151,8 +152,19 @@ both sub-packages and its own classes shows both, as a folder shows folders and 
   the path turns a flat list into a handful of siblings, and again at each step down. Levels
   that neither hold code nor branch are collapsed, so you never click through `com` →
   `com.example` → `com.example.app`. On the netty scan above that leaves **4,478 of 4,790
-  views with 25 or fewer children**, and only 10 above 150. What is left over is real
-  breadth, not an artifact of the layout.
+  views with 25 or fewer children**.
+- **The tail of a wide view is folded, and the tail of a dense one is thinned.** Grouping
+  cannot help a package that genuinely holds 338 types — that is real breadth. So a view
+  draws the 40 entities that carry it and puts the rest behind one `+298 more` outline you
+  can open. Edges get the same treatment for a different reason: dependency weight is
+  brutally skewed, so drawing **31% of netty's `codec.http2` edges keeps 85% of the total
+  weight**. Press `e` for all of them, or hover an entity to get its own back. Every entity
+  keeps its single heaviest link whatever the threshold says, so nothing is ever drawn as
+  isolated when it is not.
+  Both truncations are stated in the status line — `40 of 338 types · 55 of 180 edges` —
+  because a silent cap reads as "this is everything".
+
+  ![a package of 338 types, folded to the 40 that carry it](docs/wide-view.png)
 - Anything a view depends on that lives **outside** it appears as a **dashed entity on the
   rim**, placed in the direction that thing actually lies — double-click it and you are
   there.
