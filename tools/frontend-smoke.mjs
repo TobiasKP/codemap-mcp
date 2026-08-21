@@ -37,6 +37,38 @@ function check(label, condition, detail) {
  * runs against whatever server you point it at, so "this project does not offer that case"
  * is information, not a failure - failing on it trains you to ignore the output.
  */
+/**
+ * The geometry of a view: where everything sits, and the frame it is measured against.
+ *
+ * Real entities take their coordinates from the layout in the database and cannot move, but
+ * everything derived - the outline, the ring the externals sit on, the spot a proposed node
+ * or a fold marker is given - used to be measured over whatever subset was being drawn. So
+ * toggling focus or opening a fold visibly shifted things that had not changed.
+ */
+function geometry(app) {
+  const at = (n) => n.x.toFixed(3) + ',' + n.y.toFixed(3);
+  return {
+    extent: JSON.stringify({
+      cx: +app.state.viewExtent.cx.toFixed(3),
+      cy: +app.state.viewExtent.cy.toFixed(3),
+      r: +app.state.viewExtent.r.toFixed(3),
+    }),
+    nodes: new Map(app.state.viewNodes.map((n) => [n.name, at(n)])),
+    externals: new Map(app.state.externals.map((x) => [x.name, at(x)])),
+    proposed: new Map(app.state.proposedNodes.map((n) => [n.name, at(n) + '/' + n.r.toFixed(3)])),
+    marker: app.state.foldMarker ? at(app.state.foldMarker) : null,
+  };
+}
+
+/** Names in `before` that exist in `after` at different coordinates. */
+function shifted(before, after) {
+  const out = [];
+  for (const [name, where] of before) {
+    if (after.has(name) && after.get(name) !== where) out.push(name);
+  }
+  return out;
+}
+
 function note(label, detail) {
   console.log(`  n/a  ${label}${detail == null ? '' : '  (' + detail + ')'}`);
 }
@@ -456,9 +488,17 @@ check('going up repeatedly reaches the root',
       && app.pick(...app.worldToScreen(app.state.foldMarker.x, app.state.foldMarker.y))
         === app.state.foldMarker, 'one marker, pickable');
 
-    // opening it is the way back to everything
+    // opening it is the way back to everything - and must not move what was already drawn
     const folded = app.state.foldMarker.folded;
+    const beforeOpen = geometry(app);
     await app.activate(app.state.foldMarker);
+    const afterOpen = geometry(app);
+    check('opening the fold leaves the frame alone',
+      beforeOpen.extent === afterOpen.extent, afterOpen.extent);
+    check('opening the fold moves nothing that was already drawn',
+      shifted(beforeOpen.nodes, afterOpen.nodes).length === 0
+        && shifted(beforeOpen.externals, afterOpen.externals).length === 0,
+      `${beforeOpen.nodes.size} entities and ${beforeOpen.externals.size} externals stayed put`);
     check('opening the fold shows the rest',
       app.state.viewNodes.length === wide.children && !app.state.foldMarker,
       `${app.state.viewNodes.length} of ${wide.children}, marker gone`);
@@ -643,6 +683,7 @@ check('going up repeatedly reaches the root',
     const before = (app.state.childrenOf.get(pkg.id) || []).length;
     // observed, not derived: an earlier check may have left this container's fold open
     const shownBefore = app.state.viewNodes.length;
+    const geoOff = geometry(app);
     el('set-planning-focus').checked = true;
     el('set-planning-focus').fire('change', { target: { checked: true } });
     await sleep(60);
@@ -656,6 +697,16 @@ check('going up repeatedly reaches the root',
       app.state.focusedOut === before - app.state.viewNodes.length
         && app.state.viewNodes.every((n) => app.proposalAlpha(n) === 1),
       app.state.focusedOut + ' removed, nothing drawn at reduced alpha');
+    // the whole point of a focused view is that it is the same view with less in it
+    const geoOn = geometry(app);
+    check('focusing leaves the frame alone', geoOff.extent === geoOn.extent, geoOn.extent);
+    check('focusing moves nothing it kept',
+      shifted(geoOff.nodes, geoOn.nodes).length === 0
+        && shifted(geoOff.externals, geoOn.externals).length === 0
+        && shifted(geoOff.proposed, geoOn.proposed).length === 0,
+      `${geoOn.nodes.size} entities, ${geoOn.externals.size} externals and `
+        + `${geoOn.proposed.size} proposed all at their original coordinates`);
+
     const drawnIds = new Set(app.state.viewNodes.map((n) => n.id));
     check('no edge points at something that was removed',
       app.state.viewEdges.every((e) => drawnIds.has(e.s) && drawnIds.has(e.d)),

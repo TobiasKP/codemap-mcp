@@ -585,6 +585,10 @@ async function pollProposal() {
  * contain it yet. It goes in the emptiest spot inside its container: inside, because it
  * belongs there and the rim already means "elsewhere"; emptiest, because dropping it on top
  * of an existing class would read as a change to that class.
+ *
+ * `siblings` is every child of the container, not the drawn subset, so the spot is the same
+ * whether or not focus or folding is hiding some of them - and so it still avoids an entity
+ * that is currently hidden but would reappear.
  */
 function placeAdditions(siblings, parentId) {
   if (!overlayActive()) return [];
@@ -780,7 +784,12 @@ function thinEdges(edges) {
   };
 }
 
-/** The marker standing in for the folded tail: a door, not a participant. */
+/**
+ * The marker standing in for the folded tail: a door, not a participant.
+ *
+ * Placed against every child for the same reason additions are - opening the fold must not
+ * make the marker's own position, or anything else in the view, jump.
+ */
 function makeFoldMarker(container, shown, folded) {
   if (!folded) return null;
   const extent = state.viewExtent;
@@ -901,14 +910,17 @@ function buildView() {
   state.childCount = children.length;
   state.edgeCount = edges.length;
   /*
-   * Focus frames on everything the container holds, not on the handful it kept. Two
-   * reasons: the change then appears where it actually lives, so you keep your sense of
-   * place inside the package, and framing on two entities would otherwise zoom until they
-   * overflowed the screen. The empty space is honest - the rest of the package is there,
-   * it is just not drawn.
+   * The extent is a property of the container, not of whatever subset is currently drawn.
+   *
+   * Everything derived hangs off it - the outline, the ring the dashed externals sit on,
+   * the spot a proposed node is given - so measuring it over the drawn subset made all of
+   * that move whenever the subset changed: toggling focus, or opening a fold, visibly
+   * shifted and resized things that had not changed at all. Real entities never move (their
+   * coordinates come from the layout in the database); this is what stops the synthesized
+   * ones from moving either.
    */
-  state.viewExtent = measureExtent(focusActive() && all.length ? all : nodes);
-  state.foldMarker = container ? makeFoldMarker(container, nodes, fold.folded) : null;
+  state.viewExtent = measureExtent(all.length ? all : nodes);
+  state.foldMarker = container ? makeFoldMarker(container, all, fold.folded) : null;
   // computed against every child, not the focused subset: otherwise the siblings focus
   // just removed would come back as a rim of dashed "outside" circles
   const externals = container
@@ -923,7 +935,7 @@ function buildView() {
       ext.links = ext.links.filter((l) => l.inner && drawn.has(l.inner.id));
     }
   }
-  state.proposedNodes = placeAdditions(nodes, parentId);
+  state.proposedNodes = placeAdditions(all, parentId);
   state.proposedEdges = routeConnections(inside);
   state.labelPrefix = dominantPrefix(nodes);
   state.buffersDirty = true;
