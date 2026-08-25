@@ -70,11 +70,16 @@ export function createRasteriser({ app, width, height, palette }) {
     }
   }
 
-  function drawSegment(ax, ay, bx, by, widthPx, rgb, alpha) {
+  function drawSegment(ax, ay, bx, by, widthPx, rgb, alpha, piece) {
     if (alpha <= 0.003) return;
     const len = Math.hypot(bx - ax, by - ay);
-    if (len < 1.5) return;                       // the shader fades these out too
-    const fade = smoothstep(1.5, 6, len);
+    if (len < (piece ? 0.4 : 1.5)) return;       // the shader fades these out too
+    /*
+     * The length fade is the shader's treatment of a genuinely short edge. A dash is not
+     * a short edge - it is part of a long one - so it keeps full strength, or a dashed
+     * line would come out paler than the same line drawn solid.
+     */
+    const fade = piece ? 1 : smoothstep(1.5, 6, len);
     const half = Math.max(0.5, widthPx * 0.5);
     const lo = Math.max(0, Math.floor(Math.min(ax, bx) - half - 1));
     const hi = Math.min(width - 1, Math.ceil(Math.max(ax, bx) + half + 1));
@@ -114,8 +119,32 @@ export function createRasteriser({ app, width, height, palette }) {
       const [ax, ay] = app.worldToScreen(data[base], data[base + 1]);
       const [bx, by] = app.worldToScreen(data[base + 2], data[base + 3]);
       const w = (o.width || 1.4) * (0.5 + 0.18 * Math.log2(1 + data[base + 4]));
-      drawSegment(ax, ay, bx, by, w, o.color,
-        o.alpha * (o.color[3] == null ? 1 : o.color[3]));
+      const alpha = o.alpha * (o.color[3] == null ? 1 : o.color[3]);
+      if (!o.dashPx) { drawSegment(ax, ay, bx, by, w, o.color, alpha); continue; }
+      /*
+       * The shader dashes by discarding fragments past 55% of each period along the line,
+       * so the equivalent here is to lay down that 55% as its own short segment. Worth
+       * mirroring rather than skipping: on a proposed connection running out to the rim
+       * the dash is the thing that says "and it leaves the view".
+       */
+      const len = Math.hypot(bx - ax, by - ay);
+      if (len < 0.5) continue;
+      const ux = (bx - ax) / len;
+      const uy = (by - ay) / len;
+      /*
+       * Inset by half the width at each end. The shader's dash is a rectangular slice of
+       * a quad, but drawSegment is a distance field and so rounds its caps - which adds
+       * half a width of ink beyond each end. Left uncompensated a 4.95px dash at 4.5px
+       * wide covers 9.45px of a 9px period, and the "dashed" line rasterises solid.
+       */
+      const cap = Math.max(0.5, w * 0.5);
+      for (let at = 0; at < len; at += o.dashPx) {
+        const from = Math.min(len, at + cap);
+        const to = Math.min(len, at + o.dashPx * 0.55 - cap);
+        if (to <= from) continue;
+        drawSegment(ax + ux * from, ay + uy * from, ax + ux * to, ay + uy * to,
+          w, o.color, alpha, true);
+      }
     }
   }
 
@@ -173,6 +202,7 @@ export function createRasteriser({ app, width, height, palette }) {
       playEdges(app.batches.externalEdges, {
         color: parse(palette['--edge']),
         alpha: edgeAlpha(app.batches.externalEdges.count) * 0.8 * dim, width: 1.3,
+        dashPx: 8,
       });
       playDiscs(app.batches.externals, {
         override: parse(palette['--canvas']), overrideAlpha: dim, minPx: 7, padPx: 2.5,
@@ -195,6 +225,9 @@ export function createRasteriser({ app, width, height, palette }) {
       playEdges(app.batches.proposedEdges, {
         color: parse(palette['--prop-add']), alpha: 0.95, width: 5.5,
       });
+      playEdges(app.batches.proposedOutEdges, {
+        color: parse(palette['--prop-add']), alpha: 0.9, width: 4.5, dashPx: 18,
+      });
       playDiscs(app.batches.proposedNodes, {
         override: parse(palette['--canvas']), minPx: 7, padPx: 2.6, hollow: false,
       });
@@ -203,7 +236,7 @@ export function createRasteriser({ app, width, height, palette }) {
       playDiscs(app.batches.statusAdd, { minPx: 6, padPx: 8.4 });
       playDiscs(app.batches.statusModify, { minPx: 6, padPx: 3.4 });
       playDiscs(app.batches.statusDelete, { minPx: 6, padPx: 3.4, dash: 11 });
-      playDiscs(app.batches.statusMark, { minPx: 6, padPx: 3.4, alpha: 0.55 });
+      playDiscs(app.batches.statusMark, { minPx: 6, padPx: 3.4, alpha: 0.3 });
     }
 
     if (app.state.selected) {

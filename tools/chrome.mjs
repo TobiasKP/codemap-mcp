@@ -22,7 +22,7 @@ const GEO = {
   topHeight: 34,
   panelRadius: 10,
   prop: { top: 62, width: 316 },
-  legend: { width: 300 },
+  legend: { width: 316 },   // shares the rail's width with #prop
   settings: { top: 62, width: 330 },
 };
 
@@ -116,6 +116,75 @@ export function chromeOps({ app, el, width, height, palette }) {
     if (stats) text(GEO.pad + 11, y + 10, 12, muted, stats, { align: 'right' });
   }
 
+  /*
+   * ----------------------------------------------------------------- legend
+   *
+   * Drawn before the proposal panel even though it sits below it, because the proposal
+   * panel is clipped to whatever the legend leaves - the same division of the rail the
+   * stylesheet's flex column makes. Order here does not affect z-order: magickArgs() puts
+   * every panel behind every piece of text regardless of when it was pushed.
+   */
+  let legendTop = height - GEO.pad;
+  {
+    const kinds = (el('legend-kinds').children || [])
+      .map((item) => ({ label: deepText(item), glyph: kindGlyph(item, palette) }));
+    const edges = (el('legend-edges').children || [])
+      .map((item) => ({
+        label: deepText(item), color: lineColor(item, palette), dashed: lineDashed(item),
+      }));
+    const hint = deepText(el('legend-hint'));
+
+    const rows = [];
+    rows.push({ heading: 'NODE' });
+    for (const k of kinds) rows.push(k);
+    rows.push({ heading: 'EDGE' });
+    for (const e of edges) rows.push(e);
+    if (hint) {
+      rows.push({ rule: true });
+      for (const part of wrap(hint, 11, GEO.legend.width - 26)) {
+        rows.push({ label: part, size: 11, color: muted, plain: true });
+      }
+    }
+
+    let h = 10;
+    for (const row of rows) h += row.heading ? 17 : (row.rule ? 9 : 17);
+    h += 10;
+    const y0 = height - GEO.pad - h;
+    legendTop = y0;
+    panel(GEO.pad, y0, GEO.legend.width, h);
+
+    let y = y0 + 10;
+    for (const row of rows) {
+      if (row.heading) {
+        text(GEO.pad + 13, y + 2, 10, muted, row.heading, { weight: 'Bold' });
+        y += 17;
+      } else if (row.rule) {
+        ops.push({ type: 'rule', x: GEO.pad + 13, y: y + 3, w: GEO.legend.width - 26 });
+        y += 9;
+      } else if (row.plain) {
+        text(GEO.pad + 13, y, row.size, row.color, row.label);
+        y += 17;
+      } else {
+        if (row.glyph) {
+          ops.push({ type: 'glyph', x: GEO.pad + 19, y: y + 7, ...row.glyph });
+        } else if (row.color && row.dashed) {
+          // three dashes across the same 14px the solid swatch occupies, so the two rows
+          // line up and the difference between them is the only thing that reads
+          for (let i = 0; i < 3; i++) {
+            ops.push({
+              type: 'rule', x: GEO.pad + 13 + i * 5, y: y + 7, w: 3,
+              color: row.color, thick: 2,
+            });
+          }
+        } else if (row.color) {
+          ops.push({ type: 'rule', x: GEO.pad + 13, y: y + 7, w: 14, color: row.color, thick: 2 });
+        }
+        text(GEO.pad + 30, y, 11, ink2, row.label);
+        y += 17;
+      }
+    }
+  }
+
   // ---------------------------------------------------------- proposal panel
   const proposal = app.state.proposal;
   if (app.overlayActive() && proposal) {
@@ -126,29 +195,92 @@ export function chromeOps({ app, el, width, height, palette }) {
 
     lines.push({ size: 13, color: ink, text: deepText(el('p-title')), weight: 'Bold' });
     lines.push({ size: 11, color: muted, text: deepText(el('p-sub')) });
-    lines.push({ rule: true });
+
+    // folded to its headline: the stylesheet hides the key and the list, so does this
+    const folded = el('prop').classList.contains('folded');
+    if (!folded) lines.push({ rule: true });
 
     // the status key: swatch, texture and the word, one entry per status in play
-    const key = (el('p-key').children || []);
+    const key = folded ? [] : (el('p-key').children || []);
     if (key.length) lines.push({ keyRow: key.map((item) => keyEntry(item, palette)) });
 
-    for (const row of el('p-list').children || []) {
+    // what the plan did not mention: bullets, above the list they qualify
+    const exposure = folded ? null : el('p-exposure');
+    if (exposure && exposure.style.display !== 'none' && (exposure.children || []).length) {
+      const risk = colorOf('var(--prop-risk)', palette);
+      lines.push({ rule: true });
+      for (const child of exposure.children) {
+        if (child.tagName === 'H3') {
+          lines.push({ size: 10, color: risk, text: deepText(child), weight: 'Bold' });
+          continue;
+        }
+        for (const item of child.children || []) {
+          // the marker is a CSS ::before in the browser, which nothing reading the DOM can
+          // see, so it is drawn here rather than pulled from the text
+          const dim = (item.className || '').includes('more');
+          const text = deepText(item).replace(/\s+/g, ' ').trim();
+          const rows = wrap(text, 12, inner - 14);
+          // the bullet path already offsets its text, so only the wrapped continuation
+          // rows carry an indent of their own - otherwise the first line sits twice as far
+          // in as the ones under it
+          rows.forEach((piece, i) => lines.push({
+            size: 12, color: dim ? muted : ink2, text: piece,
+            indent: i === 0 && !dim ? 0 : 14,
+            bullet: i === 0 && !dim ? '\u2022' : '', bulletColor: risk,
+          }));
+        }
+      }
+    }
+
+    for (const row of folded ? [] : (el('p-list').children || [])) {
       const [mark, what] = row.children;
       const symbol = deepText(mark);
       const style = (mark.className || '').split(' ').find((c) => c.startsWith('op-'));
       const color = colorOf(`var(${statusVar(style)})`, palette);
       const body = what.children || [];
       const headline = deepText(body[0]).replace(/\s+/g, ' ').trim();
-      const note = body[1] ? deepText(body[1]).replace(/\s+/g, ' ').trim() : '';
       lines.push({ size: 12, color: ink, text: headline, bullet: symbol, bulletColor: color });
-      for (const part of note ? wrap(note, 11, inner - 16) : []) {
-        lines.push({ size: 11, color: muted, text: part, indent: 16 });
+      /*
+       * Every sub-line, not just the first. A row can now carry the agent's note *and* the
+       * graph's remark about precedent, and taking body[1] alone silently dropped whichever
+       * came second - which for a connection with no note was the entire finding.
+       */
+      for (const part of body.slice(1)) {
+        const cls = part.className || '';
+        const tone = cls.includes('warn') ? colorOf('var(--prop-risk)', palette) : muted;
+        const text = deepText(part).replace(/\s+/g, ' ').trim();
+        for (const piece of text ? wrap(text, 11, inner - 16) : []) {
+          lines.push({ size: 11, color: tone, text: piece, indent: 16 });
+        }
       }
     }
 
+    /*
+     * Clip to what the legend leaves. In a browser the overflow scrolls; here it would
+     * just be drawn, and a long proposal ran straight down over the legend - two panels
+     * of text on top of each other, in a picture whose whole job is to show that the
+     * panels are readable. Cut where the browser's scrollbar would start, and say how
+     * many rows are below the fold rather than dropping them silently.
+     */
+    const measure = (line) => (line.rule ? 11 : (line.keyRow ? 20 : line.size + 6));
+    const ceiling = legendTop - GEO.pad - GEO.prop.top;
+    const fits = [];
+    let used = 22;
+    let dropped = 0;
+    for (const line of lines) {
+      if (used + measure(line) <= ceiling - 17) fits.push(line);
+      else if (!line.indent) dropped++;
+      used += measure(line);
+    }
+    if (dropped) {
+      fits.push({ size: 11, color: muted, text: `+ ${dropped} more · scroll the panel` });
+    }
+    lines.length = 0;
+    lines.push(...fits);
+
     // measure, then draw the box behind the text
     let h = 11;
-    for (const line of lines) h += line.rule ? 11 : (line.keyRow ? 20 : line.size + 6);
+    for (const line of lines) h += measure(line);
     h += 11;
     panel(x, GEO.prop.top, w, h);
 
@@ -177,55 +309,6 @@ export function chromeOps({ app, el, width, height, palette }) {
         text(tx, y, line.size, line.color, line.text, { weight: line.weight });
       }
       y += line.size + 6;
-    }
-  }
-
-  // ----------------------------------------------------------------- legend
-  {
-    const kinds = (el('legend-kinds').children || [])
-      .map((item) => ({ label: deepText(item), glyph: kindGlyph(item, palette) }));
-    const edges = (el('legend-edges').children || [])
-      .map((item) => ({ label: deepText(item), color: lineColor(item, palette) }));
-    const hint = deepText(el('legend-hint'));
-
-    const rows = [];
-    rows.push({ heading: 'NODE' });
-    for (const k of kinds) rows.push(k);
-    rows.push({ heading: 'EDGE' });
-    for (const e of edges) rows.push(e);
-    if (hint) {
-      rows.push({ rule: true });
-      for (const part of wrap(hint, 11, GEO.legend.width - 26)) {
-        rows.push({ label: part, size: 11, color: muted, plain: true });
-      }
-    }
-
-    let h = 10;
-    for (const row of rows) h += row.heading ? 17 : (row.rule ? 9 : 17);
-    h += 10;
-    const y0 = height - GEO.pad - h;
-    panel(GEO.pad, y0, GEO.legend.width, h);
-
-    let y = y0 + 10;
-    for (const row of rows) {
-      if (row.heading) {
-        text(GEO.pad + 13, y + 2, 10, muted, row.heading, { weight: 'Bold' });
-        y += 17;
-      } else if (row.rule) {
-        ops.push({ type: 'rule', x: GEO.pad + 13, y: y + 3, w: GEO.legend.width - 26 });
-        y += 9;
-      } else if (row.plain) {
-        text(GEO.pad + 13, y, row.size, row.color, row.label);
-        y += 17;
-      } else {
-        if (row.glyph) {
-          ops.push({ type: 'glyph', x: GEO.pad + 19, y: y + 7, ...row.glyph });
-        } else if (row.color) {
-          ops.push({ type: 'rule', x: GEO.pad + 13, y: y + 7, w: 14, color: row.color, thick: 2 });
-        }
-        text(GEO.pad + 30, y, 11, ink2, row.label);
-        y += 17;
-      }
     }
   }
 
@@ -278,6 +361,12 @@ function lineColor(item, palette) {
   const svg = (item.children || []).find((c) => c.tagName === 'SVG');
   const line = svg && svg.children && svg.children[0];
   return colorOf(line && line.getAttribute('stroke'), palette);
+}
+
+function lineDashed(item) {
+  const svg = (item.children || []).find((c) => c.tagName === 'SVG');
+  const line = svg && svg.children && svg.children[0];
+  return !!(line && line.getAttribute('stroke-dasharray'));
 }
 
 /**

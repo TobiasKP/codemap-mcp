@@ -89,6 +89,47 @@ addition, solid for a change, dashed for a deletion, each spelled out in the pan
 and red are the one pair hue cannot separate for a red-green colour blind reader, or in
 print, so hue is never the only channel.
 
+### What the graph says back
+
+Everything above draws the plan faithfully, which means it draws a bad plan just as
+convincingly as a good one. Two things on the map are *not* the agent's account of its own
+work — they come from the scan, and they are the only parts that can disagree with it.
+
+**Precedent.** Every proposed dependency arrives with the number of times the codebase
+already makes the same trip, counted between the two containers the edge actually crosses:
+
+```
+connect TextbausteinService → parseSummaryText
+  ⚠ against the grain (19:1 the other way)        529 exist this way, 10251 the other
+connect TextbausteinButtonProvider → TextbausteinService
+  ⌀ follows 10251 existing
+connect TextbausteinService → SummaryRelevantServiceFacade
+  ⌀ inside de.itc.onkostar.verwaltung
+```
+
+Same three green arrows on the map, and three completely different decisions. A call that
+joins ten thousand existing references is a mechanical consequence; the first edge from A to
+B is an architectural choice somebody made in passing.
+
+**Exposure.** What the plan changes that has users the plan never mentions — the shape of an
+incomplete plan, and invisible on a map that only draws what it was told. It reads as a short
+list above the change list, one line each, clickable:
+
+```
+LOOK CLOSER AT
+• Kontext · 34 users, none in the plan
+```
+
+This was a violet ring on the map once. It came off: exposure is scattered by nature — those
+34 callers land in a dozen packages — so painting it lit half the screen at every level and
+drowned out the change it was meant to qualify. The finding was real, the ink was noise.
+Violet stays as **text only, never on the canvas**, and the count sits in the status line
+(`34 not addressed`) where collapsing the panel cannot dismiss it. `get_proposal` reports it
+too, so an agent can answer for its own omissions before a human ever looks.
+
+Neither needs a model, another scan, or a config file: precedent is a rolled-up edge already
+in the table, and exposure is the reverse of the edges used to draw the view.
+
 ## The MCP tools
 
 | Reading | |
@@ -167,7 +208,8 @@ depth:
 project ─▶ module ─▶ name-path group ─▶ … ─▶ package ─▶ class ─▶ function
 ```
 
-Double-click to open, `Backspace` to go up, `f` to refit, `e` for every edge, `/` to search.
+Double-click to open, `Backspace` to go up, `f` to refit, `e` for every edge,
+`p` to fold the plan panel away, `/` to search.
 A package holding both sub-packages and its own classes shows both, as a folder shows
 folders and files.
 

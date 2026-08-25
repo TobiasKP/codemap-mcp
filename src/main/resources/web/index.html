@@ -34,6 +34,10 @@
     --prop-add:      #0e7546;
     --prop-change:   #dfa300;
     --prop-del:      #c4291c;
+    /* violet is the one hue the status palette does not use, so it cannot be mistaken for
+       add / change / delete / note - and it is not a status at all: it marks what the plan
+       did NOT name. Text only, never on the canvas; see #prop .exposure. */
+    --prop-risk:     #6b4fd8;
     --shadow:        0 1px 3px rgba(11, 11, 11, .09), 0 8px 24px rgba(11, 11, 11, .06);
   }
   @media (prefers-color-scheme: dark) {
@@ -60,6 +64,7 @@
       --prop-add:      #33aa74;
       --prop-change:   #b8860b;
       --prop-del:      #c73b2e;
+      --prop-risk:     #8b73e8;
       --shadow:        0 1px 3px rgba(0, 0, 0, .5), 0 8px 24px rgba(0, 0, 0, .4);
     }
   }
@@ -85,6 +90,7 @@
     --prop-add:      #33aa74;
     --prop-change:   #b8860b;
     --prop-del:      #c73b2e;
+    --prop-risk:     #8b73e8;
     --shadow:        0 1px 3px rgba(0, 0, 0, .5), 0 8px 24px rgba(0, 0, 0, .4);
   }
 
@@ -196,14 +202,37 @@
   #closeside { position: absolute; top: 8px; right: 10px; }
 
   /* proposal overlay panel: what an LLM has drawn onto the map */
+  /*
+   * The left rail owns the vertical space, and the two panels in it divide it up. The
+   * proposal panel used to set its own max-height against the viewport, which meant
+   * guessing how tall the legend was - and the guess was wrong in exactly the worst case,
+   * because the legend grows when a proposal is up (two more edge rows and a longer hint)
+   * at the same moment the change list is longest. The two then drew on top of each other.
+   * Here the legend keeps its height and the proposal panel takes what is left, scrolling.
+   */
+  #rail {
+    position: fixed; top: 62px; left: 12px; bottom: 12px; width: 316px; z-index: 4;
+    display: flex; flex-direction: column; gap: 12px; pointer-events: none;
+  }
+  #rail > * { pointer-events: auto; }
   #prop {
-    top: 62px; left: 12px; width: 316px; max-height: calc(100vh - 230px);
-    overflow: auto; padding: 11px 13px; z-index: 4; display: none;
+    position: static; flex: 0 1 auto; min-height: 0;
+    overflow: auto; padding: 11px 13px; display: none;
   }
   #prop.open { display: block; }
   #prop .head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 8px; }
-  #prop h2 { margin: 0; font-size: 13px; line-height: 1.3; flex: 1; word-break: break-word; }
+  #prop h2 { margin: 0; font-size: 13px; line-height: 1.3; flex: 1; word-break: break-word;
+             cursor: pointer; }
   #prop .sub { color: var(--ink-muted); font-size: 11px; margin: -4px 0 8px; }
+  /*
+   * Folded: the plan collapses to its own headline, so the map and the legend get the
+   * space back. What survives is what tells you it is still there and worth opening -
+   * the title and the one-line summary - because a control that hides the panel without
+   * a trace is indistinguishable from the proposal having gone away.
+   */
+  #p-fold { padding: 2px 6px; line-height: 1; font-size: 10px; align-self: center; }
+  #prop.folded .key, #prop.folded ul { display: none; }
+  #prop.folded .sub { margin-bottom: 0; }
   /* the status key: colour AND ring texture AND the word, so none of the three has to
      carry identity on its own */
   #prop .key { display: flex; flex-wrap: wrap; gap: 3px 11px; margin-bottom: 9px;
@@ -219,6 +248,23 @@
   #prop li .what { overflow: hidden; }
   #prop li .what b { font-weight: 600; }
   #prop li .note { color: var(--ink-muted); font-size: 11px; }
+  /* the graph's own remark on a row, set apart from the agent's note above it */
+  /* the glyph is written into the text by JS, not added here: colour is never the only
+     channel that carries a meaning, and a ::before is invisible to the offline renderer */
+  #prop li .grain { font-variant-numeric: tabular-nums; }
+  #prop li .grain.warn { color: var(--prop-risk); }
+  /* what the plan did not mention: bullets, not a report. This is the whole of the
+     purple in the interface now - it used to be rings on the map, which lit half the
+     screen at every level because exposure is scattered by nature. */
+  #prop .exposure { margin: 0 0 9px; padding-bottom: 8px;
+                    border-bottom: 1px solid var(--hairline); }
+  #prop .exposure h3 { margin: 0 0 4px; font-size: 10px; letter-spacing: .06em;
+                       text-transform: uppercase; color: var(--prop-risk); }
+  #prop .exposure li { grid-template-columns: 9px 1fr; gap: 6px; font-size: 12px;
+                       color: var(--ink-2); }
+  #prop .exposure li::before { content: '\2022'; color: var(--prop-risk); }
+  #prop .exposure li.more { color: var(--ink-muted); font-size: 11px; cursor: default; }
+  #prop .exposure li.more::before { content: ''; }
   #prop .op-add    { color: var(--prop-add); }
   #prop .op-modify { color: var(--prop-change); }
   #prop .op-delete { color: var(--prop-del); }
@@ -245,7 +291,8 @@
   }
 
   /* legend + status */
-  #legend { bottom: 12px; left: 12px; padding: 9px 12px; z-index: 3; max-width: 300px; }
+  #legend { position: static; flex: none; margin-top: auto; padding: 9px 12px;
+            z-index: 3; }
   #legend h4 { margin: 0 0 6px; font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
                color: var(--ink-muted); }
   #legend .row { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 7px; }
@@ -316,13 +363,19 @@
   <div id="s-links"></div>
 </aside>
 
+<div id="rail">
 <aside id="prop" class="panel" aria-live="polite">
   <div class="head">
+    <button class="btn" id="p-fold" aria-expanded="true"
+            aria-controls="p-list" title="Collapse the plan">▾</button>
     <h2 id="p-title"></h2>
     <button class="btn" id="p-toggle" title="Show the map without the overlay">On</button>
   </div>
   <div class="sub" id="p-sub"></div>
   <div class="key" id="p-key"></div>
+  <!-- above the change list, not below it: the list is long and scrolls, and the one
+       thing that must never fall below the fold is the part nobody wrote down -->
+  <div class="exposure" id="p-exposure"></div>
   <ul id="p-list"></ul>
 </aside>
 
@@ -332,6 +385,7 @@
   <h4>Edge</h4>
   <div class="row" id="legend-edges"></div>
   <div class="hint" id="legend-hint">Drag to pan · scroll to zoom · click to inspect · double-click to enter</div>
+</div>
 </div>
 
 <div id="zoom" class="panel">

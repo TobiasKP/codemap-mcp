@@ -13,7 +13,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { createEnvironment, PALETTE, ROOT, WEB } from './stub-dom.mjs';
+import { createEnvironment, PALETTE, DARK_PALETTE, ROOT, WEB } from './stub-dom.mjs';
 
 const BASE = (process.argv[2] || 'http://localhost:7777').replace(/\/$/, '');
 const APP = path.join(WEB, 'app.js');
@@ -66,6 +66,14 @@ function shifted(before, after) {
   for (const [name, where] of before) {
     if (after.has(name) && after.get(name) !== where) out.push(name);
   }
+  return out;
+}
+
+/** All the text under an element, the way the offline chrome reads it. */
+function textOf(node) {
+  if (!node) return '';
+  let out = node._text || '';
+  for (const child of node.children || []) out += textOf(child);
   return out;
 }
 
@@ -136,6 +144,26 @@ console.log(`\nfrontend smoke test against ${BASE}\n`);
   }
   check('renderer palette matches the stylesheet', drift.length === 0,
     drift.length ? drift.slice(0, 3).join('; ') : pairs[0][1] && Object.keys(pairs[0][1]).length + ' keys x2');
+
+  /*
+   * And the offline palette matches both. stub-dom.mjs keeps its own copy because it fakes
+   * getComputedStyle, so a new colour added to the app and the stylesheet is silently
+   * absent from every still and GIF - the renderer falls back to ink and nothing errors.
+   * That is exactly how --prop-risk shipped wrong once.
+   */
+  const offline = [];
+  for (const [name, js, , ] of pairs) {
+    const stub = name === 'dark' ? DARK_PALETTE : PALETTE;
+    for (const key of Object.keys(js)) {
+      if (stub[key] === undefined) offline.push(`${name} ${key} missing from stub-dom`);
+      else if (squash(stub[key]) !== js[key]) {
+        offline.push(`${name} ${key}: stub ${squash(stub[key])} vs js ${js[key]}`);
+      }
+    }
+  }
+  check('the offline palette matches the renderer', offline.length === 0,
+    offline.length ? offline.slice(0, 3).join('; ')
+      : Object.keys(PALETTE).length + ' keys shared with the rasteriser');
 }
 
 // An on-demand renderer MUST keep its drawing buffer: WebGL empties it after each
@@ -615,6 +643,35 @@ check('going up repeatedly reaches the root',
   check('the panel names each status in words',
     el('p-key').children.length >= 3, el('p-key').children.length + ' key entries');
 
+  /*
+   * The panel folds to its headline and back. It is a long panel pinned to the left rail,
+   * so getting the space back has to be possible without withdrawing the proposal or
+   * switching the overlay off - both of which change what the map says, where this does not.
+   */
+  {
+    const rows = el('p-list').children.length;
+    el('p-fold').fire('click', {});
+    await sleep(40);
+    check('the plan folds to its headline',
+      el('prop').classList.contains('folded')
+        && el('p-fold').getAttribute('aria-expanded') === 'false'
+        && el('prop').classList.contains('open'),
+      'folded, still open, ' + el('p-fold').textContent);
+    check('folding withdraws nothing',
+      app.overlayActive() && el('p-list').children.length === rows
+        && app.state.proposedNodes.length > 0,
+      `${rows} rows still listed, overlay still on`);
+    const saved = await fetch(BASE + '/api/settings').then((r) => r.json());
+    check('the fold is remembered',
+      saved.settings['planning.plan_folded'] === 'yes',
+      JSON.stringify(saved.settings));
+    el('p-fold').fire('click', {});
+    await sleep(40);
+    check('and unfolds again', !el('prop').classList.contains('folded')
+      && el('p-fold').getAttribute('aria-expanded') === 'true',
+      el('p-fold').textContent);
+  }
+
   check('the modified class is lit as its own change',
     (app.statusOf(victim) || {}).s === 'modify' && app.statusOf(victim).own === 1,
     JSON.stringify(app.statusOf(victim)));
@@ -634,6 +691,117 @@ check('going up repeatedly reaches the root',
     'no overlap with real entities');
   check('the proposed connection was routed', app.batches.proposedEdges.count === 1,
     app.state.proposedEdges.length + ' edges in this view');
+
+  /*
+   * A proposed connection whose far end is not in this view. The map already answers a real
+   * cross-boundary reference with a dashed entity on the rim; a proposed one is the same
+   * claim and has to get the same answer, or a new class that exists to call three things
+   * elsewhere reads as unconnected in its own view.
+   */
+  {
+    const outsider = app.state.byLayer[3].find((n) => n.parent !== pkg.id && !n.stub)
+      || app.state.byLayer[2].find((n) => n.id !== pkg.id && n.parent !== pkg.id);
+    if (!outsider) {
+      note('a proposed connection out of the view reaches the rim',
+        'the fixture has nothing loaded outside this package');
+    } else {
+      await post('/api/proposal/change', {
+        op: 'connect', from: 'n1', to: String(outsider.id), edge_kind: 'CALL',
+        note: 'the new class needs something from elsewhere',
+      });
+      await app.pollProposal();
+      frame();
+      const leaving = app.state.proposedEdges.filter((c) => c.leaves);
+      check('a proposed connection out of the view reaches the rim',
+        leaving.length === 1 && leaving[0].b.isExternal,
+        leaving.length ? `${leaving[0].a.name} -> ${leaving[0].b.name} on the rim`
+          : 'no arrow left the view');
+      check('the rim entity it lands on is the one you can travel to',
+        leaving.length === 1 && !!app.state.externals.find((x) => x === leaving[0].b)
+          && !!leaving[0].b.targetId,
+        leaving.length ? 'target id ' + leaving[0].b.targetId : 'n/a');
+      check('it is drawn dashed, in its own pass, not as a plain edge',
+        app.batches.proposedOutEdges.count === leaving.length
+          && app.batches.proposedEdges.count
+            === app.state.proposedEdges.length - leaving.length,
+        `${app.batches.proposedOutEdges.count} leaving, `
+          + `${app.batches.proposedEdges.count} staying`);
+      check('the legend explains the dashed arrow it just drew',
+        el('legend-edges').children.some((c) =>
+          c.children.some((s) => (s.children || [])
+            .some((l) => l.getAttribute('stroke-dasharray')))),
+        el('legend-edges').children.map((c) => c.children
+          .filter((s) => s.tagName !== 'SVG').length).join('/') + ' rows');
+      // the rim entity is a real node somewhere else, so its status has to come from there
+      check('the rim entity carries the proposal status of what it stands for',
+        leaving.length === 1 && !!app.statusOf(leaving[0].b),
+        leaving.length ? JSON.stringify(app.statusOf(leaving[0].b)) : 'n/a');
+    }
+  }
+
+  /*
+   * The two things the graph says back. Everything else in the overlay is the agent's own
+   * assertion drawn faithfully; these are the only parts that can disagree with it, so they
+   * are the only parts that turn the map from a description into a review.
+   */
+  {
+    const connects = app.state.proposal.changes.filter((c) => c.op === 'connect');
+    check('every proposed connection is measured against precedent',
+      connects.length > 0 && connects.every((c) => c.precedent),
+      connects.map((c) => c.precedent && c.precedent.verdict).join(' | '));
+    const local = connects.filter((c) => c.precedent.local);
+    const crossing = connects.filter((c) => !c.precedent.local);
+    check('an edge inside one container is called local, not unprecedented',
+      local.length > 0 && local.every((c) => /^inside /.test(c.precedent.verdict)),
+      local.length ? local[0].precedent.verdict : 'no local connection in this fixture');
+    if (!crossing.length) {
+      note('a boundary-crossing edge is counted both ways',
+        'nothing in this proposal leaves its container');
+    } else {
+      check('a boundary-crossing edge is counted both ways',
+        crossing.every((c) => c.precedent.from && c.precedent.to
+          && c.precedent.forward >= 0 && c.precedent.backward >= 0),
+        crossing.map((c) => `${c.precedent.from}→${c.precedent.to}`
+          + ` ${c.precedent.forward}/${c.precedent.backward}`).join(', '));
+    }
+
+    const exposure = app.state.proposal.exposure || [];
+    if (!exposure.length) {
+      note('the plan is measured for what it does not mention',
+        'nothing this plan changes has untouched users in this fixture');
+      note('an exposed neighbour survives folding', 'no exposure to protect');
+    } else {
+      check('the plan is measured for what it does not mention',
+        exposure.every((e) => e.total > e.addressed && e.samples.length > 0),
+        exposure.map((e) => `${e.name}: ${e.total - e.addressed} of ${e.total}`).join(', '));
+      check('the exposed set is rolled up so it can be seen from above',
+        !!app.state.proposal.risk
+          && exposure.every((e) => e.samples.every((n) => app.state.proposal.risk[n.id])),
+        Object.keys(app.state.proposal.risk || {}).length + ' ids carry a risk count');
+      /*
+       * Exposure is text, never a mark on the canvas. It was a violet ring once and it lit
+       * half the screen at every level - exposure is scattered by nature, so painting it
+       * drowned out the change it was meant to qualify. The finding stayed; the ink went.
+       */
+      frame();
+      const src = fs.readFileSync(APP, 'utf8');
+      check('exposure is stated in the panel, not painted on the map',
+        !/statusRisk/.test(src) && !/palette\['--prop-risk'\]/.test(src)
+          && el('p-exposure').style.display === 'block',
+        'no canvas pass reads --prop-risk; the panel section is open');
+      const bullets = el('p-exposure').children
+        .filter((c) => c.tagName === 'UL')
+        .flatMap((c) => c.children);
+      check('it is a short list of what to look at, not a report',
+        bullets.length > 0 && bullets.length <= 7
+          && bullets.every((b) => !/\n/.test(textOf(b))),
+        bullets.map((b) => textOf(b)).join(' | ').slice(0, 90));
+    }
+  }
+
+  // captured rather than hardcoded: the assertions below only care that switching a view
+  // control did not withdraw anything, so they must not need editing when a case is added
+  const changeCount = app.state.proposal.changes.length;
 
   app.clearSelection();
   app.updateLabels();
@@ -736,9 +904,11 @@ check('going up repeatedly reaches the root',
       && app.batches.proposedNodes.count === app.state.proposedNodes.length,
       app.state.proposedNodes.length + ' proposed');
     check('the proposed connection is still drawn',
-      app.batches.proposedEdges.count === app.state.proposedEdges.length
+      app.batches.proposedEdges.count + app.batches.proposedOutEdges.count
+          === app.state.proposedEdges.length
         && app.state.proposedEdges.length > 0,
-      app.state.proposedEdges.length + ' arrows');
+      `${app.state.proposedEdges.length} arrows, `
+        + `${app.batches.proposedOutEdges.count} of them leaving the view`);
 
     // the rollup still has to work, or focusing removes the way in
     await app.openView(null);
@@ -766,14 +936,14 @@ check('going up repeatedly reaches the root',
     await sleep(60);
     check('turning it off restores the view',
       app.state.viewNodes.length === shownBefore && app.state.focusedOut === 0
-        && app.state.proposal.changes.length === 4,
+        && app.state.proposal.changes.length === changeCount,
       `${app.state.viewNodes.length} of ${shownBefore} entities back, proposal intact`);
   }
 
   // switching the overlay off is a local view control, not a change to the proposal
   el('p-toggle').fire('click', {});
   check('the overlay can be switched off without withdrawing the proposal',
-    !app.overlayActive() && app.state.proposal.changes.length === 4,
+    !app.overlayActive() && app.state.proposal.changes.length === changeCount,
     'overlay off, proposal intact');
   el('p-toggle').fire('click', {});
   check('and switched back on', app.overlayActive());

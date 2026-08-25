@@ -23,6 +23,7 @@ export const PALETTE = {
   '--kind-file': '#898781', '--dir-out': '#2a78d6', '--dir-in': '#eb6834', '--ink': '#0b0b0b',
   '--ink-2': '#52514e', '--ink-muted': '#898781', '--panel': '#fcfcfb',
   '--prop-add': '#0e7546', '--prop-change': '#dfa300', '--prop-del': '#c4291c',
+  '--prop-risk': '#6b4fd8',
 };
 
 export const DARK_PALETTE = {
@@ -32,6 +33,7 @@ export const DARK_PALETTE = {
   '--kind-file': '#898781', '--dir-out': '#3987e5', '--dir-in': '#d95926', '--ink': '#ffffff',
   '--ink-2': '#c3c2b7', '--ink-muted': '#898781', '--panel': '#1a1a19',
   '--prop-add': '#33aa74', '--prop-change': '#b8860b', '--prop-del': '#c73b2e',
+  '--prop-risk': '#8b73e8',
 };
 
 class El {
@@ -49,6 +51,13 @@ class El {
       add: (c) => this.classList._set.add(c),
       remove: (c) => this.classList._set.delete(c),
       contains: (c) => this.classList._set.has(c),
+      // the two-argument form as well: toggle(c, force) is a set-to, not a flip
+      toggle: (c, force) => {
+        const on = force === undefined ? !this.classList._set.has(c) : !!force;
+        if (on) this.classList._set.add(c);
+        else this.classList._set.delete(c);
+        return on;
+      },
     };
     this.offsetWidth = 120;
     this.offsetHeight = 30;
@@ -225,7 +234,8 @@ export function createEnvironment(opts) {
 ;globalThis.__app = { state, batches, render, pick, updateLabels, fitView, goUp, activate,
   openView, buildView, computeExternals, loadChildren, isInside, selectNode, clearSelection,
   worldToScreen, screenToWorld, zoomBy, flyToNode, kindOf, palette: () => palette,
-  pollProposal, overlayActive, statusOf, proposalAlpha, updateProposalPanel, STATUS,
+  pollProposal, overlayActive, statusOf, riskOf, proposalAlpha,
+  updateProposalPanel, STATUS,
   ingestNodes }`;
   vm.createContext(context);
   vm.runInContext(source + exposed, context, { filename: 'app.js' });

@@ -406,12 +406,58 @@ public final class McpServer {
             }
             String note = str(c.get("note"));
             if (!note.isEmpty()) sb.append("  - ").append(note);
+            /*
+             * The graph's own remark, fed back to whoever is planning. This is the point of
+             * putting it here rather than only in the viewer: an agent that can see it said
+             * "against the grain, 19:1" can reconsider before a human ever looks, and one
+             * that meant it can say why.
+             */
+            Map<String, Object> p = Json.asMap(c.get("precedent"));
+            String verdict = str(p.get("verdict"));
+            if (!verdict.isEmpty()) sb.append("\n      precedent: ").append(verdict);
             sb.append('\n');
         }
         long lit = Json.asMap(data.get("nodes")).size();
         sb.append("Everything else on the map is dimmed; ").append(lit)
                 .append(" node(s) are lit, counting the containers above them.\n");
+        renderExposure(sb, listArg(data, "exposure"));
         return sb.toString();
+    }
+
+    /**
+     * What the plan changes that has users the plan never mentions.
+     *
+     * <p>Stated as a question rather than a verdict, because the graph does not know whether
+     * a caller actually needs touching - only that nobody said. Adding a constant to an enum
+     * breaks nothing; changing the meaning of one breaks thirty-four call sites, and the
+     * difference is not in the graph. Naming the callers is what lets the next step be a
+     * decision instead of a guess.
+     */
+    private void renderExposure(StringBuilder sb, List<Object> exposure) {
+        if (exposure.isEmpty()) return;
+        sb.append("\nWhat this plan does not mention:\n");
+        for (Object item : exposure) {
+            Map<String, Object> e = Json.asMap(item);
+            long total = num(e.get("total"));
+            long addressed = num(e.get("addressed"));
+            sb.append("  ").append(str(e.get("name"))).append(" (#").append(num(e.get("id")))
+                    .append(") is used by ").append(total).append(" other(s); ")
+                    .append(addressed == 0 ? "none" : addressed + " of them")
+                    .append(" appear in this proposal\n");
+            List<Object> samples = listArg(e, "samples");
+            if (samples.isEmpty()) continue;
+            sb.append("      ");
+            for (int i = 0; i < Math.min(6, samples.size()); i++) {
+                Map<String, Object> n = Json.asMap(samples.get(i));
+                if (i > 0) sb.append(", ");
+                sb.append(str(n.get("name"))).append(" (#").append(num(n.get("id")))
+                        .append(' ').append(str(n.get("kind"))).append(')');
+            }
+            if (samples.size() > 6) sb.append(", and ").append(samples.size() - 6).append(" more");
+            sb.append('\n');
+        }
+        sb.append("Check whether any of these need to change too, and say so if they do"
+                + " - or say why they do not.\n");
     }
 
     private String refName(Object raw) {

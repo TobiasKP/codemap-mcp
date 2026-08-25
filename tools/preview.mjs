@@ -118,7 +118,9 @@ if (app.overlayActive()) {
     + app.batches.statusDelete.count + app.batches.statusMark.count;
   console.log(`  proposal "${app.state.proposal.title}"`
     + `  ${app.state.proposal.changes.length} changes  ${rings} lit here`
-    + `  ${app.batches.proposedNodes.count} new  ${app.batches.proposedEdges.count} arrows`);
+    + `  ${app.batches.proposedNodes.count} new`
+    + `  ${app.batches.proposedEdges.count + app.batches.proposedOutEdges.count} arrows`
+    + ` (${app.batches.proposedOutEdges.count} leaving the view)`);
 }
 console.log(`  ${raster.paintedPercent().toFixed(1)}% of pixels differ from the background`
   + ` -> ${OUT}`);

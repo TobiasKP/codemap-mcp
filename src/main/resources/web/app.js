@@ -120,6 +120,21 @@ function statusOf(node) {
   return state.proposal.nodes[String(key)] || null;
 }
 
+/**
+ * How many entities at or below this node use something the proposal changes without the
+ * proposal saying anything about them.
+ *
+ * This is the one thing on the map the agent did not put there. A status says "the plan
+ * touches this"; a risk count says "the plan does not mention this, and the graph says it
+ * should have been considered". They are different claims and must never share a channel:
+ * everything else in the overlay is an assertion, and this is a contradiction of one.
+ */
+function riskOf(node) {
+  if (!overlayActive() || !node || !state.proposal.risk) return 0;
+  const key = node.isExternal ? node.targetId : node.id;
+  return state.proposal.risk[String(key)] || 0;
+}
+
 // ------------------------------------------------------------------- webgl setup
 
 const canvas = document.getElementById('map');
@@ -340,6 +355,8 @@ const batches = {
   statusMark: makeBatch(8),
   proposedNodes: makeBatch(8),
   proposedEdges: makeBatch(5),
+  /** proposed connections whose far end is off the view, so they run out to the rim. */
+  proposedOutEdges: makeBatch(5),
   /** the thinned-away edges, and the marker standing in for a folded tail. */
   edgesHidden: makeBatch(5),
   edgesHovered: makeBatch(5),
@@ -369,6 +386,7 @@ const THEMES = {
     '--ink': '#0b0b0b', '--ink-2': '#52514e', '--ink-muted': '#898781',
     '--panel': '#fcfcfb',
     '--prop-add': '#0e7546', '--prop-change': '#dfa300', '--prop-del': '#c4291c',
+    '--prop-risk': '#6b4fd8',
   },
   dark: {
     '--canvas': '#0d0d0d', '--district': '#1c1c1a', '--district-line': '#3d3d37',
@@ -378,6 +396,7 @@ const THEMES = {
     '--ink': '#ffffff', '--ink-2': '#c3c2b7', '--ink-muted': '#898781',
     '--panel': '#1a1a19',
     '--prop-add': '#33aa74', '--prop-change': '#b8860b', '--prop-del': '#c73b2e',
+    '--prop-risk': '#8b73e8',
   },
 };
 
@@ -567,7 +586,6 @@ async function pollProposal() {
   state.proposal = (data.changes || []).length ? data : null;
   buildView();                                 // additions are placed per view
   updateProposalPanel();
-  buildLegend();
   updateStats();
   if (state.selected) rebuildHighlight();
   requestRedraw();
@@ -649,43 +667,142 @@ function freeSpot(siblings, placed, extent, r) {
 }
 
 /**
- * The proposed connections that can be drawn in this view, with each end rolled up to
+ * The proposed connections this view has to say something about, with each end resolved to
  * whatever stands for it here. A connection between two methods in different modules is
  * therefore an arrow between two modules at the top and an arrow between two methods once
  * you are inside - the same fact, drawn at whatever level you are looking at.
+ *
+ * An end that is nowhere in the view does not make the connection undrawable. The map
+ * already answers "this depends on something elsewhere" with a dashed entity on the rim,
+ * aimed at where that elsewhere lies; a proposed dependency is the same claim about the
+ * same geography and gets the same treatment. Without it a new class whose whole purpose
+ * is to call three things in other packages reads as unconnected in its own view, which is
+ * the opposite of true - and worse, it is a silence, not a visible edge to somewhere.
+ *
+ * Runs in two halves because the rim does not exist yet: this one decides which foreign
+ * containers the rim must carry, and {@link attachConnections} draws to them once they
+ * have positions.
  */
-function routeConnections(inside) {
-  if (!overlayActive()) return [];
+function planConnections(inside, container) {
+  if (!overlayActive()) return { routes: [], rim: new Set() };
   const byRef = new Map(state.proposedNodes.map((node) => [node.ref, node]));
-  const out = [];
+  const ownIds = ancestry(container);
+  const routes = [];
+  // keyed by the id to put on the rim, valued by the in-view node it should point at, so
+  // the rim entity ends up on the side of the view its arrow comes from
+  const rim = new Map();
   for (const conn of state.proposal.connections) {
-    const a = endpointInView(conn.fromId, conn.fromRef, inside, byRef, 0);
-    const b = endpointInView(conn.toId, conn.toRef, inside, byRef, 0);
+    const a = resolveEndpoint(conn.fromId, conn.fromRef, inside, byRef, 0);
+    const b = resolveEndpoint(conn.toId, conn.toRef, inside, byRef, 0);
+    if (!a || !b) continue;
+    // neither end is here: this connection is somebody else's view to draw
+    if (!a.node && !b.node) continue;
+    const route = { kind: conn.kind, note: conn.note };
+    if (a.node) route.a = a.node;
+    else if (container) route.outsideA = rimTargetFor(a.outsideId, container, ownIds);
+    if (b.node) route.b = b.node;
+    else if (container) route.outsideB = rimTargetFor(b.outsideId, container, ownIds);
+    if (!route.a && !route.outsideA) continue;
+    if (!route.b && !route.outsideB) continue;
+    if (route.a && route.a === route.b) continue;
+    if (route.outsideA && !rim.get(route.outsideA)) rim.set(route.outsideA, route.b || null);
+    if (route.outsideB && !rim.get(route.outsideB)) rim.set(route.outsideB, route.a || null);
+    routes.push(route);
+  }
+  return { routes, rim };
+}
+
+/**
+ * Turns planned routes into drawable arrows now that the rim has been placed.
+ *
+ * Rolling an end up merges connections: three calls into three different classes of one
+ * foreign package are one arrow at package level. Drawing them as three identical lines
+ * would not say "three" - it would stack three translucent strokes into one that looks
+ * heavier than it is, which is a claim about weight rather than about count. So they
+ * collapse into one arrow that knows how many it stands for.
+ */
+function attachConnections(plan, externals) {
+  const onRim = new Map(externals.map((ext) => [ext.targetId, ext]));
+  const byPair = new Map();
+  const out = [];
+  for (const route of plan.routes) {
+    const a = route.a || onRim.get(route.outsideA);
+    const b = route.b || onRim.get(route.outsideB);
     if (!a || !b || a === b) continue;
-    out.push({ a, b, kind: conn.kind, note: conn.note });
+    const key = a.id + '>' + b.id;
+    const seen = byPair.get(key);
+    if (seen) {
+      seen.count++;
+      if (seen.kind !== route.kind) seen.kind = 'MIXED';
+      if (route.note && !seen.notes.includes(route.note)) seen.notes.push(route.note);
+      continue;
+    }
+    const conn = {
+      a, b, kind: route.kind, note: route.note, notes: route.note ? [route.note] : [],
+      count: 1, leaves: !route.a || !route.b,
+    };
+    byPair.set(key, conn);
+    out.push(conn);
   }
   return out;
 }
 
-function endpointInView(id, ref, inside, byRef, depth) {
+/** The container's own id and every id above it. */
+function ancestry(container) {
+  const ids = new Set();
+  let current = container;
+  for (let i = 0; i < 32 && current; i++) {
+    ids.add(current.id);
+    current = state.nodes.get(current.parent);
+  }
+  return ids;
+}
+
+/**
+ * Either the node that stands for this endpoint in the view, or the id of the real node
+ * that the view will have to point outwards at.
+ */
+function resolveEndpoint(id, ref, inside, byRef, depth) {
   if (depth > 8) return null;
   if (ref) {
     const drawn = byRef.get(ref);
-    if (drawn) return drawn;
+    if (drawn) return { node: drawn };
     // the new node is not drawn here; stand in for whatever will contain it
     const addition = state.proposal.additions.find((a) => a.ref === ref);
     if (!addition) return null;
     if (addition.parentRef) {
-      return endpointInView(0, addition.parentRef, inside, byRef, depth + 1);
+      return resolveEndpoint(0, addition.parentRef, inside, byRef, depth + 1);
     }
     return addition.parentId
-      ? endpointInView(addition.parentId, '', inside, byRef, depth + 1) : null;
+      ? resolveEndpoint(addition.parentId, '', inside, byRef, depth + 1) : null;
   }
-  if (inside.has(id)) return state.nodes.get(id);
+  if (inside.has(id)) return { node: state.nodes.get(id) };
   for (const ancestor of state.proposal.chains[String(id)] || []) {
-    if (inside.has(ancestor)) return state.nodes.get(ancestor);
+    if (inside.has(ancestor)) return { node: state.nodes.get(ancestor) };
   }
-  return null;
+  return { outsideId: id };
+}
+
+/**
+ * The foreign entity to aim at for a node outside this view: its highest ancestor that is
+ * still a sibling of something on our own ancestor chain - the same choice
+ * {@link nearestNavigable} makes for real edges, but decided from the ancestor ids the
+ * proposal ships rather than from loaded nodes, because the branch it lives on may never
+ * have been fetched.
+ *
+ * 0 when there is nothing to point at: the node is inside this very container (folded away
+ * rather than elsewhere) and an arrow to the rim would be a lie about where it lives.
+ */
+function rimTargetFor(farId, container, ownIds) {
+  if (!farId) return 0;
+  const chain = state.proposal.chains[String(farId)] || [];
+  if (farId === container.id || chain.includes(container.id)) return 0;
+  let candidate = farId;
+  for (const up of chain) {
+    if (ownIds.has(up)) return candidate;
+    candidate = up;
+  }
+  return candidate;
 }
 
 /**
@@ -729,6 +846,8 @@ function proposalAlpha(node) {
  * is everything" and is worse than the clutter it removes.
  */
 const FOLD_LIMIT = 40;
+/* bullets in "look closer at": a list you scroll is one you stop reading */
+const CARE_LIMIT = 6;
 const EDGE_FLOOR = 60;
 /** the share of total edge weight the drawn edges must account for. */
 const EDGE_SHARE = 0.85;
@@ -756,9 +875,17 @@ function foldTail(children, container) {
       || state.expandedFolds.has(container.id)) {
     return { shown: children, folded: 0 };
   }
+  /*
+   * Anything the review is about survives folding: what the plan touches, and what the plan
+   * failed to mention but the graph says it exposes. The second one matters more here, not
+   * less - an omission ranked 49th by importance and folded away is exactly the omission
+   * nobody notices.
+   */
   const touched = [];
   const rest = [];
-  for (const child of children) (statusOf(child) ? touched : rest).push(child);
+  for (const child of children) {
+    (statusOf(child) || riskOf(child) ? touched : rest).push(child);
+  }
   // ranked the same way labels are, so the things drawn are the things named
   rest.sort((a, b) => importanceOf(b) - importanceOf(a));
   const shown = touched.concat(rest.slice(0, Math.max(0, FOLD_LIMIT - touched.length)));
@@ -909,6 +1036,7 @@ function buildView() {
    */
   const children = focusActive() ? all.filter((n) => statusOf(n)) : all;
   state.focusedOut = all.length - children.length;
+
   const fold = foldTail(children, container);
   const nodes = fold.shown;
   const inside = new Set(nodes.map((n) => n.id));
@@ -942,24 +1070,38 @@ function buildView() {
    */
   state.viewExtent = measureExtent(all.length ? all : nodes);
   state.foldMarker = container ? makeFoldMarker(container, all, fold.folded) : null;
+  /*
+   * Additions are placed before the rim rather than after, because a proposed connection
+   * can need a rim entity that no real edge asks for, and the rim has to be laid out
+   * knowing about it. Nothing here reads the rim, so the order is free.
+   */
+  state.proposedNodes = placeAdditions(all, parentId);
+  const plan = planConnections(inside, container);
   // computed against every child, not the focused subset: otherwise the siblings focus
   // just removed would come back as a rim of dashed "outside" circles
   const externals = container
-    ? computeExternals(container, new Set(all.map((n) => n.id))) : [];
+    ? computeExternals(container, new Set(all.map((n) => n.id)), plan.rim) : [];
   state.externals = externals;
   if (focusActive()) {
     // an external's links point at the child the reference leaves from, and that child may
     // be one focus dropped - so prune them, or the rim gets edges drawn from nothing
     const drawn = new Set(nodes.map((n) => n.id));
-    state.externals = externals.filter((x) => statusOf(x));
+    state.externals = externals.filter((x) => statusOf(x) || plan.rim.has(x.targetId));
     for (const ext of state.externals) {
       ext.links = ext.links.filter((l) => l.inner && drawn.has(l.inner.id));
     }
   }
-  state.proposedNodes = placeAdditions(all, parentId);
-  state.proposedEdges = routeConnections(inside);
+  state.proposedEdges = attachConnections(plan, state.externals);
   state.labelPrefix = dominantPrefix(nodes);
   state.buffersDirty = true;
+  /*
+   * The legend is part of the view, not of the session: what it has to explain changes
+   * with what got drawn - a folded tail, a thinned edge set, an arrow running off to the
+   * rim. Three of the four callers already paired buildView() with buildLegend(); the ones
+   * that did not (opening a view, expanding a fold) left the panel describing the view you
+   * had just left, which is worse than saying nothing.
+   */
+  buildLegend();
 }
 
 /** The circle this view's contents occupy, used for framing, the rim and the outline. */
@@ -1034,7 +1176,7 @@ function isInside(node, container) {
  * entity per foreign container, placed in the direction that container actually lies, so
  * following it is a move on the same map rather than a jump to somewhere unrelated.
  */
-function computeExternals(container, inside) {
+function computeExternals(container, inside, pinned) {
   const byTarget = new Map();
   const record = (targetNode, innerNode, weight, outgoing) => {
     if (!targetNode || targetNode.id === container.id) return;
@@ -1104,18 +1246,56 @@ function computeExternals(container, inside) {
     }
   }
 
+  /*
+   * Whatever a proposed connection needs, whether or not the code already goes there. A
+   * brand new dependency is by definition not in any of the passes above, so the entity
+   * that stands for its far end has to be minted here - from the naming the proposal
+   * carries, since the branch it lives on may never have been fetched.
+   */
+  for (const [targetId, anchor] of pinned || []) {
+    if (!targetId || byTarget.has(targetId)) continue;
+    const known = state.nodes.get(targetId);
+    const mark = state.proposal.nodes[String(targetId)] || {};
+    const name = (known && known.name) || mark.name;
+    if (!name) continue;
+    byTarget.set(targetId, {
+      id: 'ext:' + targetId,
+      targetId,
+      name,
+      qname: (known && known.qname) || mark.qname || '',
+      kind: 'EXTERNAL',
+      layer: (known && known.layer) || mark.layer || 0,
+      isExternal: true,
+      proposedOnly: true,
+      anchor: anchor || null,
+      out: 0,
+      in: 0,
+      links: [],
+    });
+  }
+
   const extent = state.viewExtent;
   const radius = Math.max(extent.r * 0.06, 3);
-  const list = [...byTarget.values()]
-    .sort((a, b) => (b.out + b.in) - (a.out + a.in))
-    .slice(0, 24);
+  const byWeight = (a, b) => (b.out + b.in) - (a.out + a.in);
+  /*
+   * The cap is on how much of the rim is worth reading, but an entity a proposed
+   * connection points at is not a candidate for truncation - the arrow would be left
+   * hanging - so it is kept regardless of how little weight it carries.
+   */
+  const all = [...byTarget.values()];
+  const required = all.filter((x) => pinned && pinned.has(x.targetId)).sort(byWeight);
+  const list = required.concat(
+    all.filter((x) => !(pinned && pinned.has(x.targetId)))
+      .sort(byWeight)
+      .slice(0, Math.max(0, 24 - required.length)),
+  );
   const needed = list.length * (radius * 2 + radius * 0.9);
   const ring = Math.max(extent.r * 1.16, needed / (Math.PI * 2));
   // aim each one at where its own contents sit, so the direction still means something
   let index = 0;
   for (const ext of list) {
     const inner = ext.links.find((l) => l.inner);
-    const from = inner ? inner.inner : null;
+    const from = inner ? inner.inner : ext.anchor;
     ext.angle = from
       ? Math.atan2(from.y - extent.cy, from.x - extent.cx)
       : (index / Math.max(1, list.length)) * Math.PI * 2;
@@ -1397,6 +1577,7 @@ function rebuildProposalBuffers() {
       if (mark) push(ext, mark.s);
     }
   }
+
   uploadBatch(batches.statusAdd, new Float32Array(rings.add), rings.add.length / 8);
   uploadBatch(batches.statusModify, new Float32Array(rings.modify), rings.modify.length / 8);
   uploadBatch(batches.statusDelete, new Float32Array(rings.delete), rings.delete.length / 8);
@@ -1410,11 +1591,17 @@ function rebuildProposalBuffers() {
   }
   uploadBatch(batches.proposedNodes, new Float32Array(added), added.length / 8);
 
+  // split by whether the connection stays in the view, so one that leaves can be drawn
+  // dashed like the rim it runs to: a solid line to a dashed circle would read as a
+  // sibling relationship rather than as a trip out of the package
   const edges = [];
+  const leaving = [];
   for (const conn of state.proposedEdges) {
-    edges.push(conn.a.x, conn.a.y, conn.b.x, conn.b.y, 3);
+    const into = conn.leaves ? leaving : edges;
+    into.push(conn.a.x, conn.a.y, conn.b.x, conn.b.y, 3);
   }
   uploadBatch(batches.proposedEdges, new Float32Array(edges), edges.length / 5);
+  uploadBatch(batches.proposedOutEdges, new Float32Array(leaving), leaving.length / 5);
 }
 
 // ------------------------------------------------------------------ drawing
@@ -1626,6 +1813,10 @@ function drawProposal() {
   drawEdges(batches.proposedEdges, {
     color: palette['--prop-add'], alpha: 0.95, width: 5.5, taper: 0.72,
   });
+  // and one that leaves the view, dashed to match the rim entity it lands on
+  drawEdges(batches.proposedOutEdges, {
+    color: palette['--prop-add'], alpha: 0.9, width: 4.5, taper: 0.72, dashPx: 18,
+  });
 
   // entities that do not exist yet: a diamond, on a surface ring so one landing near an
   // existing glyph stays separable from it
@@ -1644,7 +1835,14 @@ function drawProposal() {
   drawDiscs(batches.statusAdd, { minPx: 6, padPx: 8.4 });
   drawDiscs(batches.statusModify, { minPx: 6, padPx: 3.4 });
   drawDiscs(batches.statusDelete, { minPx: 6, padPx: 3.4, dash: 11 });
-  drawDiscs(batches.statusMark, { minPx: 6, padPx: 3.4, alpha: 0.55 });
+  /*
+   * A note is the faintest of the four on purpose. An annotation or a highlight is context
+   * an agent left behind - "this is the existing pattern", "watch the package split" -
+   * not part of the work being proposed, and at the same weight as a change it competed
+   * with the thing you opened the map to look at.
+   */
+  drawDiscs(batches.statusMark, { minPx: 6, padPx: 3.4, alpha: 0.3 });
+
 }
 
 function drawExternals(dim) {
@@ -1967,8 +2165,13 @@ async function activate(node) {
   }
   if (node.isProposed) { flyToNode(node, 5); return; }   // nothing to open: it is a plan
   if (node.isExternal) {
-    const target = state.nodes.get(node.targetId);
-    if (target) await openView(target);
+    // travelling to the rim entity is the point of it, so a branch that was never fetched
+    // is worth one request rather than a dead double-click. A proposed connection can put
+    // an entity on the rim that no loaded edge ever mentioned, which makes this reachable.
+    const target = state.nodes.get(node.targetId) || await fetchNode(node.targetId);
+    if (!target) return;
+    if (target.layer === LAYER.MEMBER) await revealById(target.id);
+    else await openView(target);
     return;
   }
   // anything with something inside it can be opened; a callable is the end of the road
@@ -1994,6 +2197,7 @@ window.addEventListener('keydown', (ev) => {
   }
   else if (ev.key === 'Backspace') { ev.preventDefault(); goUp(); }
   else if (ev.key === 'f') { fitView(); requestRedraw(); }
+  else if (ev.key === 'p') { togglePlanFold(); }
   else if (ev.key === 'e') {
     state.showAllEdges = !state.showAllEdges;
     updateStats();
@@ -2112,15 +2316,19 @@ function rebuildHighlight() {
         addRing(ext, link.outgoing ? '--dir-out' : '--dir-in');
       }
     }
-    // and so are the connections a proposal wants to add to or from it
-    for (const conn of state.proposedEdges) {
-      if (conn.a === node) {
-        out.push(node.x, node.y, conn.b.x, conn.b.y, 3);
-        addRing(conn.b, '--dir-out');
-      } else if (conn.b === node) {
-        inc.push(conn.a.x, conn.a.y, node.x, node.y, 3);
-        addRing(conn.a, '--dir-in');
-      }
+  }
+  /*
+   * And so are the connections a proposal wants to add to or from it - including when the
+   * selection is itself a dashed external, which is the whole point of putting proposed
+   * connections on the rim: selecting the far end has to show what would reach it.
+   */
+  for (const conn of state.proposedEdges) {
+    if (conn.a === node) {
+      out.push(node.x, node.y, conn.b.x, conn.b.y, 3);
+      addRing(conn.b, '--dir-out');
+    } else if (conn.b === node) {
+      inc.push(conn.a.x, conn.a.y, node.x, node.y, 3);
+      addRing(conn.a, '--dir-in');
     }
   }
   uploadBatch(batches.highlight, new Float32Array(discs), discs.length / 8);
@@ -2147,7 +2355,12 @@ function showTooltip(node, x, y) {
       + (node.note ? ' · ' + node.note : '');
   } else if (node.isExternal) {
     const where = ['', 'module', 'package', 'class', 'function'][node.layer] || 'entity';
-    meta.textContent = `outside this view · ${where} · ${node.out} out, ${node.in} in`
+    // an entity the rim carries only because a proposal points at it has no existing
+    // traffic to report, and "0 out, 0 in" would read as "nothing goes here" rather than
+    // as "nothing goes here yet"
+    const traffic = node.out || node.in
+      ? `${node.out} out, ${node.in} in` : 'no reference today';
+    meta.textContent = `outside this view · ${where} · ${traffic}`
       + ' · double-click to go there';
   } else {
     const deeper = node.layer === LAYER.MEMBER ? '' : ' · double-click to open';
@@ -2163,6 +2376,24 @@ function showTooltip(node, x, y) {
     prop.style.color = `var(${(STATUS[mark.s] || STATUS.mark).color})`;
     prop.textContent = describeMark(mark);
     tip.append(prop);
+  }
+  /*
+   * Why a proposed arrow touches this. The reason lives on the caller's side of a CONNECT,
+   * so without this the callee - and every rim entity, which is always a callee or caller
+   * of something off-view - would show a status ring and no explanation. Arrows that were
+   * merged also have several reasons behind one line, and this is where they surface.
+   */
+  const reaching = state.proposedEdges.filter((c) => c.a === node || c.b === node);
+  if (reaching.length) {
+    const total = reaching.reduce((sum, c) => sum + c.count, 0);
+    const why = document.createElement('div');
+    why.className = 'k';
+    why.style.color = 'var(--prop-add)';
+    const notes = [];
+    for (const c of reaching) for (const n of c.notes) if (!notes.includes(n)) notes.push(n);
+    why.textContent = `${total} proposed connection${total === 1 ? '' : 's'}`
+      + (notes.length ? ' · ' + notes.slice(0, 3).join(' · ') : '');
+    tip.append(why);
   }
   tip.style.display = 'block';
   positionTooltip(x, y);
@@ -2356,8 +2587,12 @@ async function saveSetting(key, value) {
   state.settings[key] = value;
   buildView();
   updateStats();
-  buildLegend();
   requestRedraw();
+  await storeSetting(key, value);
+}
+
+/** The write half on its own, for settings that change no geometry. */
+async function storeSetting(key, value) {
   try {
     await fetch('/api/settings', {
       method: 'POST',
@@ -2378,6 +2613,44 @@ document.getElementById('settings-close').onclick = () => {
 document.getElementById('set-planning-focus').onchange = (ev) => {
   saveSetting('planning.focus', ev.target.checked ? 'yes' : 'no');
 };
+
+/**
+ * Folds the plan down to its headline.
+ *
+ * The panel is fixed to the left rail and can be long - an agent that has thought about a
+ * ticket properly produces twenty rows - so there has to be a way to get the space back
+ * without withdrawing the proposal or switching the overlay off. Those are different
+ * things: the overlay toggle changes what the *map* says, this changes only how much of
+ * the reasoning is on screen.
+ *
+ * Stored, because it is a preference about how you like to work rather than a fact about
+ * the current proposal, and having to re-fold it on every poll would make it useless.
+ */
+const foldBtn = document.getElementById('p-fold');
+
+function planFolded() {
+  return state.settings['planning.plan_folded'] === 'yes';
+}
+
+function applyPlanFold() {
+  const folded = planFolded();
+  propPanel.classList.toggle('folded', folded);
+  foldBtn.textContent = folded ? '▸' : '▾';
+  foldBtn.setAttribute('aria-expanded', folded ? 'false' : 'true');
+  foldBtn.title = folded ? 'Show the whole plan' : 'Collapse the plan';
+}
+
+function togglePlanFold() {
+  if (!overlayActive()) return;
+  // written straight through rather than via saveSetting: nothing about the drawing
+  // changes, so rebuilding the view and the buffers for it would be work for nothing
+  state.settings['planning.plan_folded'] = planFolded() ? 'no' : 'yes';
+  applyPlanFold();
+  storeSetting('planning.plan_folded', state.settings['planning.plan_folded']);
+}
+
+foldBtn.onclick = togglePlanFold;
+document.getElementById('p-title').onclick = togglePlanFold;
 
 // ---------------------------------------------------------- proposal panel
 
@@ -2411,6 +2684,7 @@ function updateProposalPanel() {
     return;
   }
   propPanel.classList.add('open');
+  applyPlanFold();
   document.getElementById('p-title').textContent = proposal.title || 'Proposed change';
 
   const counts = { add: 0, modify: 0, delete: 0, mark: 0 };
@@ -2436,6 +2710,51 @@ function updateProposalPanel() {
   for (const change of proposal.changes) {
     list.append(changeRow(change));
   }
+  updateExposurePanel(proposal);
+}
+
+/**
+ * What to look closer at, as bullets.
+ *
+ * This used to be a violet ring on the map. It came off, because exposure is scattered by
+ * nature - thirty-four callers land in a dozen packages - so painting it lit half the screen
+ * at every level and drowned out the change it was supposed to qualify. The finding was
+ * real; the visual was noise.
+ *
+ * As a list it costs nothing and reads in one glance. Kept to one line each and capped: the
+ * point is what needs a second look, not an inventory of it. Clicking a line goes there.
+ */
+function updateExposurePanel(proposal) {
+  const box = document.getElementById('p-exposure');
+  box.innerHTML = '';
+  const exposure = proposal.exposure || [];
+  if (!exposure.length) { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+
+  const heading = document.createElement('h3');
+  heading.textContent = 'Look closer at';
+  box.append(heading);
+
+  const ul = document.createElement('ul');
+  for (const item of exposure.slice(0, CARE_LIMIT)) {
+    const unmentioned = item.total - item.addressed;
+    const li = document.createElement('li');
+    const name = document.createElement('b');
+    name.textContent = item.name;
+    li.append(name, document.createTextNode(` · ${item.total} user`
+      + `${item.total === 1 ? '' : 's'}, `
+      + (item.addressed ? `${unmentioned} not in the plan` : 'none in the plan')));
+    li.onclick = () => revealById(item.id);
+    li.title = item.qname;
+    ul.append(li);
+  }
+  if (exposure.length > CARE_LIMIT) {
+    const more = document.createElement('li');
+    more.className = 'more';
+    more.textContent = `+ ${exposure.length - CARE_LIMIT} more`;
+    ul.append(more);
+  }
+  box.append(ul);
 }
 
 function changeRow(change) {
@@ -2469,6 +2788,25 @@ function changeRow(change) {
     note.className = 'note';
     note.textContent = change.note;
     what.append(note);
+  }
+  /*
+   * What the codebase already does between these two. This is the only line in the panel
+   * the agent did not write, and it is the difference between reading a proposal and
+   * reviewing one: "follows 10251 existing" and "against the grain, 19:1" are the same
+   * arrow on the map and opposite decisions.
+   */
+  const p = change.precedent;
+  if (p) {
+    // a glyph only where there is something to warn about: on the neutral rows the words
+    // ("follows 10251 existing", "inside verwaltung") carry it without help, and a marker
+    // on every line would make none of them stand out
+    const warn = !p.local && p.backward > p.forward;
+    const grain = document.createElement('div');
+    grain.className = 'note grain' + (warn ? ' warn' : '');
+    grain.textContent = (warn ? '\u26a0 ' : '') + p.verdict;
+    if (!p.local) grain.title = `${p.from} → ${p.to}: ${p.forward} existing`
+      + ` · the other way: ${p.backward}` + (p.kinds ? ` · ${p.kinds}` : '');
+    what.append(grain);
   }
   li.append(op, what);
 
@@ -2517,18 +2855,20 @@ function statusGlyph(status) {
 }
 
 /** Opens the view a node lives in and selects it, fetching it first if need be. */
-async function revealById(id) {
-  let node = state.nodes.get(id);
-  if (!node) {
-    let detail;
-    try {
-      detail = await getJson('/api/node?id=' + id);
-    } catch (err) {
-      return;
-    }
-    ingestNodes([...(detail.parents || []).slice().reverse(), detail.node]);
-    node = state.nodes.get(id);
+/** Loads one node and its ancestor chain, for a branch this session never opened. */
+async function fetchNode(id) {
+  let detail;
+  try {
+    detail = await getJson('/api/node?id=' + id);
+  } catch (err) {
+    return null;
   }
+  ingestNodes([...(detail.parents || []).slice().reverse(), detail.node]);
+  return state.nodes.get(id) || null;
+}
+
+async function revealById(id) {
+  const node = state.nodes.get(id) || await fetchNode(id);
   if (!node) return;
   await openView(node.parent ? state.nodes.get(node.parent) || null : null);
   selectNode(node);
@@ -2538,7 +2878,6 @@ document.getElementById('p-toggle').onclick = () => {
   state.overlayOn = !state.overlayOn;
   document.getElementById('p-toggle').textContent = state.overlayOn ? 'On' : 'Off';
   buildView();
-  buildLegend();
   requestRedraw();
 };
 
@@ -2642,14 +2981,21 @@ function buildLegend() {
     legendLine('Depends on selection', 'var(--dir-out)'),
     legendLine('Uses selection', 'var(--dir-in)'),
   );
-  if (overlayActive()) edges.append(legendLine('Proposed', 'var(--prop-add)'));
+  if (overlayActive()) {
+    edges.append(legendLine('Proposed', 'var(--prop-add)'));
+    // only worth a row when one is on screen: it explains a shape the view actually has
+    if (state.proposedEdges.some((c) => c.leaves)) {
+      edges.append(legendLine('Proposed, leaves this view', 'var(--prop-add)', true));
+    }
+  }
 
   const hints = [];
   if (focusActive()) {
     hints.push('Focused on the proposal — everything it does not touch is left out.'
       + ' Turn it off in settings.');
   } else if (overlayActive()) {
-    hints.push('A proposal is on the map. Rings mark what it touches; the panel lists it.');
+    hints.push('A proposal is on the map. Rings mark what it touches; the panel lists it'
+      + ' · press p to fold the panel away');
   } else {
     hints.push('Drag to pan · scroll to zoom · click to inspect · double-click to enter');
   }
@@ -2703,7 +3049,7 @@ function glyphSvg(color, shape) {
   return svg;
 }
 
-function legendLine(label, color) {
+function legendLine(label, color, dashed) {
   const wrap = document.createElement('span');
   wrap.className = 'item';
   const ns = 'http://www.w3.org/2000/svg';
@@ -2714,6 +3060,7 @@ function legendLine(label, color) {
   line.setAttribute('x1', '1'); line.setAttribute('y1', '5.5');
   line.setAttribute('x2', '15'); line.setAttribute('y2', '5.5');
   line.setAttribute('stroke', color); line.setAttribute('stroke-width', '2');
+  if (dashed) line.setAttribute('stroke-dasharray', '3 2');
   svg.append(line);
   wrap.append(svg, document.createTextNode(label));
   return wrap;
@@ -2739,6 +3086,11 @@ function updateStats() {
   if (state.externals.length) parts.push(`<b>${state.externals.length}</b> outside`);
   if (overlayActive()) {
     parts.push(`<b>${state.proposal.changes.length}</b> proposed`);
+    // survives folding the panel away, because an omission you can dismiss by collapsing
+    // a panel is not a warning
+    const unaddressed = (state.proposal.exposure || [])
+      .reduce((sum, e) => sum + (e.total - e.addressed), 0);
+    if (unaddressed) parts.push(`<b>${unaddressed}</b> not addressed`);
   }
   parts.push(`${m.nodes_layer_1 || 0}·${m.nodes_layer_2 || 0}·${m.nodes_layer_3 || 0} total`);
   el.innerHTML = parts.join(' · ');
@@ -2783,6 +3135,7 @@ function showDiagnostics() {
         + ' overlay=' + (state.overlayOn ? 'on' : 'off'),
       'proposal     drawn nodes=' + state.proposedNodes.length
         + ' edges=' + state.proposedEdges.length
+        + ' leaving=' + state.proposedEdges.filter((c) => c.leaves).length
         + ' rings=' + (batches.statusAdd.count + batches.statusModify.count
           + batches.statusDelete.count + batches.statusMark.count),
     ];

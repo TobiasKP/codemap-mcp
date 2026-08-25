@@ -35,9 +35,11 @@ final class ProposalApi {
 
     private final Connection conn;
     private final Proposal proposal = new Proposal();
+    private final Review review;
 
     ProposalApi(Connection conn) {
         this.conn = conn;
+        this.review = new Review(conn);
     }
 
     Proposal proposal() {
@@ -246,7 +248,7 @@ final class ProposalApi {
         for (Change c : changes) {
             if (!first) sb.append(',');
             first = false;
-            writeChange(sb, c);
+            writeChange(sb, c, changes);
         }
         sb.append("],\"nodes\":{");
         first = true;
@@ -255,7 +257,7 @@ final class ProposalApi {
             first = false;
             Json.str(sb, String.valueOf(e.getKey()));
             sb.append(':');
-            writeMark(sb, e.getValue());
+            writeMark(sb, e.getKey(), e.getValue());
         }
         sb.append("},\"additions\":[");
         first = true;
@@ -295,11 +297,33 @@ final class ProposalApi {
             Json.field(sb, "kind", c.edgeKind.isEmpty() ? "CALL" : c.edgeKind.toUpperCase());
             sb.append(',');
             Json.field(sb, "note", c.note);
+            // what the codebase already does between these two, so an arrow is not just an
+            // assertion: it arrives with the number of times the same trip is already made
+            sb.append(",\"precedent\":");
+            Review.writePrecedent(sb, review.precedentFor(c, changes));
             sb.append('}');
+        }
+        // what the plan changes that has users the plan never mentions
+        List<Review.Exposed> exposure = review.exposure(changes, overlay.marks.keySet());
+        sb.append("],\"exposure\":[");
+        first = true;
+        for (Review.Exposed e : exposure) {
+            if (!first) sb.append(',');
+            first = false;
+            Review.writeExposed(sb, e);
+        }
+        // and the same thing rolled up, so it can be painted at whatever level is open
+        sb.append("],\"risk\":{");
+        first = true;
+        for (Map.Entry<Long, Integer> e : review.rollUpExposure(exposure).entrySet()) {
+            if (!first) sb.append(',');
+            first = false;
+            Json.str(sb, String.valueOf(e.getKey()));
+            sb.append(':').append(e.getValue());
         }
         // the ancestors of everything mentioned, so the viewer can roll an endpoint up
         // into whatever level happens to be on screen without fetching the tree
-        sb.append("],\"chains\":{");
+        sb.append("},\"chains\":{");
         first = true;
         for (Map.Entry<Long, List<Long>> e : overlay.chains.entrySet()) {
             if (!first) sb.append(',');
@@ -316,7 +340,8 @@ final class ProposalApi {
         return sb.toString();
     }
 
-    private void writeChange(StringBuilder sb, Change c) throws SQLException {
+    private void writeChange(StringBuilder sb, Change c, List<Change> all)
+            throws SQLException {
         sb.append('{');
         Json.field(sb, "id", c.id);
         sb.append(',');
@@ -339,6 +364,10 @@ final class ProposalApi {
         writeRef(sb, c.from);
         sb.append(",\"to\":");
         writeRef(sb, c.to);
+        // only a connection has precedent to report; everything else gets null and the
+        // panel simply has nothing extra to say about it
+        sb.append(",\"precedent\":");
+        Review.writePrecedent(sb, c.op == Op.CONNECT ? review.precedentFor(c, all) : null);
         sb.append('}');
     }
 
@@ -366,9 +395,23 @@ final class ProposalApi {
         sb.append('}');
     }
 
-    private static void writeMark(StringBuilder sb, Mark mark) {
+    /**
+     * One node's status, plus enough naming to stand for it.
+     *
+     * The naming is not redundant with /api/graph. Every id here is either something the
+     * proposal names or an ancestor of one, and the viewer may have loaded neither: a
+     * connection that leaves the open view has to be drawn as an entity on the rim, and
+     * that entity needs a name whether or not the branch it lives on was ever fetched.
+     */
+    private void writeMark(StringBuilder sb, long id, Mark mark) throws SQLException {
         sb.append('{');
         Json.field(sb, "s", mark.status().json());
+        sb.append(',');
+        Json.field(sb, "name", nameOf(id));
+        sb.append(',');
+        Json.field(sb, "qname", qnameOf(id));
+        sb.append(',');
+        Json.field(sb, "layer", layerOf(id));
         sb.append(',');
         Json.field(sb, "own", mark.own ? 1 : 0);
         sb.append(',');
